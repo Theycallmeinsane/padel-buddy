@@ -1,0 +1,38 @@
+# Secrets: never commit real keys. Copy .env.example to .env locally.
+.env
+.env.*
+!.env.example
+
+# Match footage, run outputs and model weights stay off GitHub
+data/
+runs/
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.m4v
+*.pt
+*.onnx
+*.engine
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Node (web app, later)
+node_modules/
+.next/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
