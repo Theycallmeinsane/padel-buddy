@@ -184,3 +184,34 @@ def _player_stats(
         cv2.imwrite(str(out / "heatmaps/all.png"), topdown.heatmap(analytics.occupancy_grid(xy, cfg.analytics.heatmap_cell_m)))
         outputs["heatmap_all"] = "heatmaps/all.png"
     return stats
+
+
+def run_match(
+    video_path: str | Path,
+    out_dir: str | Path,
+    calibration: Calibration | None = None,
+    config: EngineConfig | None = None,
+    on_progress: ProgressFn | None = None,
+    tracker: PersonTracker | None = None,
+) -> dict[str, object]:
+    """Everything the engine can do for one match, into one run folder.
+
+    Tracking runs first when a calibration is given, so clips can also use
+    player movement to rank rallies. Without a calibration only clips and
+    highlights are produced.
+    """
+    from .clips import run_clips
+
+    report = on_progress or (lambda p: None)
+    result: dict[str, object] = {}
+    tracks = None
+    if calibration is not None:
+        result["tracking"] = run_tracking(
+            video_path, calibration, out_dir, config, tracker=tracker, on_progress=lambda p: report(0.7 * p)
+        )
+        tracks = Path(out_dir) / "tracks.csv"
+    offset = 0.7 if calibration is not None else 0.0
+    result["clips"] = run_clips(
+        video_path, out_dir, config, tracks_csv=tracks, on_progress=lambda p: report(offset + (1 - offset) * p)
+    )
+    return result

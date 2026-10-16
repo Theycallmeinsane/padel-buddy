@@ -56,6 +56,52 @@ class AnalyticsConfig(BaseModel):
     heatmap_cell_m: float = Field(0.25, gt=0)
 
 
+class AudioConfig(BaseModel):
+    hit_band_hz: tuple[float, float] = Field(
+        (1500.0, 8000.0), description="Frequency band where a ball hit's pop stands out."
+    )
+    hit_sensitivity: float = Field(
+        5.0, gt=0, description="Threshold in robust standard deviations above local noise; lower finds more hits."
+    )
+    threshold_window_s: float = Field(1.0, gt=0, description="Window for the adaptive hit threshold.")
+    min_flux_fraction: float = Field(
+        0.08, ge=0, description="Absolute floor as a fraction of the loudest onsets, so silence yields no hits."
+    )
+    min_hit_interval_s: float = Field(0.12, gt=0, description="Two hits closer than this count as one.")
+
+
+class ClipsConfig(BaseModel):
+    # Rallies
+    rally_max_gap_s: float = Field(
+        3.5, gt=0, description="A longer silence between hits ends the rally (lobs can take ~3 s)."
+    )
+    rally_min_hits: int = Field(4, ge=2, description="Fewer hits than this is a warm-up or a fault, not a rally.")
+    rally_min_duration_s: float = Field(2.0, ge=0)
+
+    # Intense moments and clips
+    intense_db: float = Field(
+        6.0, gt=0, description="How much louder than a typical shot a sound must be to count as intense."
+    )
+    moment_near_rally_s: float = Field(
+        4.0, ge=0, description="Intense sounds count only during a rally or this soon after (cheers)."
+    )
+    moment_min_spacing_s: float = Field(10.0, ge=0, description="Keep the strongest moment within this span.")
+    pre_s: float = Field(30.0, ge=0, description="Clip starts this long before an intense moment.")
+    post_s: float = Field(30.0, ge=0, description="Clip ends this long after an intense moment.")
+    max_clip_s: float = Field(
+        180.0, gt=0, description="Overlapping windows merge into one clip up to this length."
+    )
+
+    # Highlight reel: the best rallies, cut tight and joined
+    reel_rallies: int = Field(10, ge=0, description="How many top rallies go in the reel.")
+    reel_pre_s: float = Field(3.0, ge=0)
+    reel_post_s: float = Field(3.0, ge=0)
+
+    # Encoding
+    video_crf: int = Field(21, ge=0, le=51, description="x264 quality; lower is better and bigger.")
+    thumbnails: bool = True
+
+
 class OutputConfig(BaseModel):
     preview_video: bool = True
     heatmaps: bool = True
@@ -65,4 +111,6 @@ class EngineConfig(BaseModel):
     detector: DetectorConfig = DetectorConfig()
     tracking: TrackingConfig = TrackingConfig()
     analytics: AnalyticsConfig = AnalyticsConfig()
+    audio: AudioConfig = AudioConfig()
+    clips: ClipsConfig = ClipsConfig()
     output: OutputConfig = OutputConfig()
