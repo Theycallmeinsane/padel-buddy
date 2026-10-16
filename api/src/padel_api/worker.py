@@ -77,6 +77,7 @@ def run_once(db: Database, storage: LocalStorage, worker: str, runner: Runner = 
 def main(settings: Settings | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     settings = settings or get_settings()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)  # the worker may start before the API
     db = Database(settings.db_url)
     db.create_all()
     storage = LocalStorage(settings.data_dir)

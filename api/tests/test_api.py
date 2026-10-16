@@ -219,3 +219,19 @@ def test_real_engine_end_to_end(client, settings, tmp_path):
     assert clip.status_code == 200 and len(clip.content) > 10_000
     ranged = client.get(f"/matches/{m['id']}/files/highlights.mp4", headers={"Range": "bytes=0-99"})
     assert ranged.status_code == 206 and len(ranged.content) == 100
+
+
+def test_worker_starts_before_the_api_has_created_anything(tmp_path, monkeypatch):
+    """The worker must create the data folder itself (it used to crash on a fresh machine)."""
+    settings = Settings(data_dir=tmp_path / "fresh" / "data", worker_poll_s=0.01)
+    calls = []
+
+    def fake_run_once(db, storage, name, runner=None):
+        calls.append(name)
+        raise SystemExit  # stop the loop after one pass
+
+    monkeypatch.setattr(worker, "run_once", fake_run_once)
+    monkeypatch.setattr(worker.signal, "signal", lambda *a: None)
+    with pytest.raises(SystemExit):
+        worker.main(settings)
+    assert calls and (tmp_path / "fresh" / "data" / "padel.db").exists()
