@@ -52,6 +52,13 @@ Design choices:
   `summary.json`, images, preview). Locally that is a directory; in the
   cloud the worker uploads the same folder to storage.
 
+## API (`api/`)
+
+FastAPI plus a worker process. Uploads are resumable (chunks with
+`Content-Range`), the jobs table doubles as the queue (workers claim rows
+with a conditional `UPDATE`), and SQLite or Postgres is just a URL. Details
+in [api/README.md](../api/README.md).
+
 ## Roadmap
 
 1. **Court mapping and player tracking.** Built.
@@ -59,9 +66,9 @@ Design choices:
    (ranked with player movement when tracking ran), clips from 30 s before
    to 30 s after, overlapping windows merged so a long rally is one clip,
    and a reel of the best rallies.
-3. **API and web app.** FastAPI with background workers and resumable
-   uploads; Supabase for Postgres and storage; a responsive Next.js app with
-   in-browser calibration (click the court once per camera position).
+3. **API and web app.** API and worker built. Next: a responsive Next.js
+   app with in-browser calibration (click the court once per camera
+   position), progress, a clip gallery and the stats.
 4. **Shots and mistakes.** Ball tracking, pose, shot classification, error
    detection and a written match report built on the tracking data.
 
