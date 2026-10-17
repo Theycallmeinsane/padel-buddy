@@ -111,7 +111,7 @@ def run_clips(
 # -- ffmpeg -------------------------------------------------------------------
 
 
-def cut(video: str | Path, start: float, end: float, dest: Path, crf: int = 21) -> Path:
+def cut(video: str | Path, start: float, end: float, dest: Path, crf: int = 23) -> Path:
     """Frame-accurate cut, re-encoded to H.264/AAC for any browser or phone."""
     _ffmpeg(
         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
@@ -120,7 +120,7 @@ def cut(video: str | Path, start: float, end: float, dest: Path, crf: int = 21) 
     return dest
 
 
-def reel(video: str | Path, spans: list[tuple[float, float]], dest: Path, crf: int = 21) -> Path:
+def reel(video: str | Path, spans: list[tuple[float, float]], dest: Path, crf: int = 23) -> Path:
     """Cut each span and join them; parts share encoder settings, so joining is lossless."""
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         parts = []
@@ -129,7 +129,8 @@ def reel(video: str | Path, spans: list[tuple[float, float]], dest: Path, crf: i
             cut(video, a, b, part, crf)
             parts.append(part)
         listing = Path(tmp) / "parts.txt"
-        listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts))
+        # ffmpeg resolves relative entries against the list's own folder.
+        listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
         _ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(dest))
     return dest
 
