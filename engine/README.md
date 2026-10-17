@@ -98,8 +98,11 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
 7. **Intense moments** are sounds at least 6 dB louder than the match's
    typical shot, during a rally or within 4 s after it: smashes, wall
    bangs, cheers, shouts. Measuring against the match's own shots makes
-   "intense" mean the same in a quiet session and a noisy club. If nothing
-   clears the bar, the loudest instant of each top rally is used instead.
+   "intense" mean the same in a quiet session and a noisy club. On a real
+   95-minute match almost every rally clears that bar, so it only makes a
+   sound a candidate: each rally keeps its best one, and only the top 8 per
+   hour of video (at least 3) are kept. If nothing clears the bar, the
+   loudest instant of each top rally is used instead.
 8. **Clips** run from 30 s before to 30 s after each moment, widened so a
    rally is never cut mid-point. Overlapping windows merge into one clip up
    to 3 minutes; after that a new clip starts (it may share a few seconds).
