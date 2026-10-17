@@ -102,7 +102,7 @@ class ClipsConfig(BaseModel):
     reel_post_s: float = Field(3.0, ge=0)
 
     # Encoding
-    video_crf: int = Field(21, ge=0, le=51, description="x264 quality; lower is better and bigger.")
+    video_crf: int = Field(23, ge=0, le=51, description="x264 quality; lower is better and bigger.")
     thumbnails: bool = True
 
 

@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -117,12 +118,13 @@ def test_quiet_match_falls_back_to_best_rallies():
 
 
 @needs_ffmpeg
-def test_end_to_end_clips(tmp_path):
+def test_end_to_end_clips(tmp_path, monkeypatch):
     from padel_engine.clips import run_clips
 
     script = default_script()
     video = make_video(tmp_path / "match.mp4", script)
-    summary = run_clips(video, tmp_path / "run", EngineConfig())
+    monkeypatch.chdir(tmp_path)  # a relative run folder, as the CLI usually gets
+    summary = run_clips(video, Path("run"), EngineConfig())
 
     run = tmp_path / "run"
     assert len(summary.rallies) == 3
