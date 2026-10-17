@@ -4,7 +4,8 @@
                                                   │
     loudness ─────────────────────────────────────┴──► intense moments: sounds
                     clearly louder than a typical shot, during or right after
-                    a rally (smash, wall bang, cheer, shout)
+                    a rally (smash, wall bang, cheer, shout); only the best
+                    one per rally, and only the best few per hour
                           │
                           └──► clip windows: pre_s before to post_s after each
                                moment, widened to cover the whole rally,
@@ -150,6 +151,11 @@ def find_moments(timeline: Timeline, rallies: list[Rally], cfg: ClipsConfig) -> 
     """Sounds ``intense_db`` louder than a typical shot, during a rally or just
     after it (a smash, a wall bang, a cheer).
 
+    Most rallies have one shot well above the typical level, so clearing the
+    bar only makes a sound a candidate. Each rally keeps its best candidate,
+    and only the top ``moments_per_hour`` (at least ``min_moments``) by score
+    are kept, so a long match gives a short list of real highlights.
+
     Falls back to the loudest instant of each of the best rallies when no
     sound clears the bar, so there are always clips to look at.
     """
@@ -166,9 +172,21 @@ def find_moments(timeline: Timeline, rallies: list[Rally], cfg: ClipsConfig) -> 
         rally = _rally_at(rallies, t, cfg.moment_near_rally_s)
         if rally is None:
             continue
+        m = Moment(t, float(excess[i]), rally.index, _moment_score(excess[i], rally))
         if moments and t - moments[-1].time < cfg.moment_min_spacing_s:
-            continue  # plateau of equal maxima
-        moments.append(Moment(t, float(excess[i]), rally.index, _moment_score(excess[i], rally)))
+            # Peaks only half a span apart both pass the filter: keep the louder.
+            if m.excess_db > moments[-1].excess_db:
+                moments[-1] = m
+            continue
+        moments.append(m)
+
+    best_per_rally: dict[int, Moment] = {}
+    for m in moments:
+        if m.rally not in best_per_rally or m.score > best_per_rally[m.rally].score:
+            best_per_rally[m.rally] = m
+    hours = float(timeline.times[-1]) / 3600.0
+    keep = max(cfg.min_moments, int(np.ceil(hours * cfg.moments_per_hour)))
+    moments = sorted(sorted(best_per_rally.values(), key=lambda m: -m.score)[:keep], key=lambda m: m.time)
 
     if not moments:
         best = sorted(rallies, key=lambda r: -r.score)[: max(1, cfg.reel_rallies)]

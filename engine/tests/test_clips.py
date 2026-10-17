@@ -87,6 +87,26 @@ def test_window_covers_a_long_rally():
     assert w[0].start == 49 and w[0].end == 134
 
 
+def test_long_match_keeps_only_the_best_moments():
+    # An hour of play where every rally has a shot well above the typical
+    # level, as in real matches: only ~8 per hour should become clips.
+    cfg = ClipsConfig(moments_per_hour=8)
+    t = np.arange(0, 3600, 0.01)
+    excess = np.zeros_like(t)
+    rallies = []
+    rng = np.random.default_rng(0)
+    for i, start in enumerate(range(10, 3500, 30)):
+        rallies.append(events.Rally(i, start, start + 12, 10, 0.0, score=0.5))
+        for k, db in enumerate(rng.uniform(6.5, 20.0, size=2)):  # two loud sounds per rally
+            excess[int((start + 2 + 8 * k) / 0.01)] = db
+    moments = events.find_moments(events.Timeline(t, excess, -20.0), rallies, cfg)
+    assert len(moments) == 8
+    assert len({m.rally for m in moments}) == 8  # at most one per rally
+    assert [m.time for m in moments] == sorted(m.time for m in moments)
+    per_rally_best = sorted((max(excess[int((r.start + 2) / 0.01)], excess[int((r.start + 10) / 0.01)]) for r in rallies), reverse=True)
+    assert sorted((m.excess_db for m in moments), reverse=True) == pytest.approx(per_rally_best[:8])
+
+
 def test_quiet_match_falls_back_to_best_rallies():
     cfg = ClipsConfig(reel_rallies=2)
     t = np.arange(0, 100, 0.01)

@@ -86,6 +86,10 @@ class ClipsConfig(BaseModel):
         4.0, ge=0, description="Intense sounds count only during a rally or this soon after (cheers)."
     )
     moment_min_spacing_s: float = Field(10.0, ge=0, description="Keep the strongest moment within this span.")
+    moments_per_hour: float = Field(
+        8.0, gt=0, description="Keep only the best moments, about this many per hour of video."
+    )
+    min_moments: int = Field(3, ge=1, description="Keep at least this many moments, however short the video.")
     pre_s: float = Field(30.0, ge=0, description="Clip starts this long before an intense moment.")
     post_s: float = Field(30.0, ge=0, description="Clip ends this long after an intense moment.")
     max_clip_s: float = Field(
