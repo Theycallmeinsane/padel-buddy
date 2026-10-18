@@ -60,9 +60,10 @@ Each run folder contains:
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | The video with player boxes and a live top-down minimap |
 | `hits.csv` | Every detected ball hit: time and strength |
-| `clips.json` | Rallies, intense moments and clips with their times and scores |
-| `clips/clip_001.mp4` … | 30 s before to 30 s after each intense moment, plus a `.jpg` thumbnail |
+| `clips.json` | Rallies (points), intense moments and clips with their times and scores |
+| `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |
 | `highlights.mp4` | The best rallies, cut tight (3 s either side) and joined in match order |
+| `condensed.mp4` | Every point back to back with the dead time between points cut, at 720p |
 
 Players are numbered by where they stand when first seen: **P1** near-left
 and **P2** near-right (team A, camera side at the start), **P3** far-left
@@ -92,21 +93,24 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    peaks above a threshold that adapts to the local noise. Voices and
    footsteps sit lower in frequency and are ignored. Audio is analysed a
    minute at a time, so a two-hour match takes seconds and little memory.
-6. **Rallies** are runs of at least 4 hits with no gap longer than 3.5 s.
-   Each rally is scored against the others in the match on length, number
-   of shots, loudness and (if tracking ran) how hard the players moved.
-7. **Intense moments** are sounds at least 6 dB louder than the match's
-   typical shot, during a rally or within 4 s after it: smashes, wall
-   bangs, cheers, shouts. Measuring against the match's own shots makes
-   "intense" mean the same in a quiet session and a noisy club. On a real
-   95-minute match almost every rally clears that bar, so it only makes a
-   sound a candidate: each rally keeps its best one, and only the top 8 per
-   hour of video (at least 3) are kept. If nothing clears the bar, the
-   loudest instant of each top rally is used instead.
-8. **Clips** run from 30 s before to 30 s after each moment, widened so a
-   rally is never cut mid-point. Overlapping windows merge into one clip up
-   to 3 minutes; after that a new clip starts (it may share a few seconds).
-9. **Highlight reel**: the 10 best rallies, cut tight and joined.
+6. **Rallies** are runs of at least 4 hits with no gap longer than 3.5 s;
+   each one is a point. Each rally is scored against the others in the
+   match on length, number of shots and (if tracking ran) how hard the
+   players moved. Loudness is left out on purpose: a phone behind one glass
+   hears balls hitting that glass far louder than anything else, so loud
+   means "near the camera", not "good point".
+7. **Clips** are the best points, whole: the top 8 per hour of video (at
+   least 3), each from 5 s before the serve to 3 s after the last shot, so
+   the build-up and the finish are both in. Points close enough to overlap
+   share a clip.
+8. **Highlight reel**: the 10 best rallies, cut tight and joined.
+9. **Condensed match**: every rally with 2 s either side, joined, so the
+   whole match plays without the walking, ball fetching and towel breaks.
+10. **Intense moments** (`--mode moments`, the old rule) are sounds at least
+   6 dB louder than the match's typical shot, during a rally or within 4 s
+   after it. Each rally keeps its loudest, the top 8 per hour are kept, and
+   clips run from 30 s before to 30 s after each one, widened so a rally is
+   never cut mid-point. They are still listed in `clips.json` in points mode.
 
 Settings live in `padel_engine/config.py` (the `audio` and `clips` sections
 cover all of the above); pass a JSON file of overrides with `--config`.
