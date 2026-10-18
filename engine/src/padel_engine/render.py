@@ -23,17 +23,34 @@ FLOOR_COLOR = (120, 90, 40)
 def draw_court_on_frame(frame: np.ndarray, calib: Calibration, color=(0, 255, 255)) -> np.ndarray:
     """Project the court model into the image, plus the clicked keypoints."""
     out = frame.copy()
-    for name, (a, b) in court.LINES.items():
-        pts = np.linspace(a, b, 50)
-        img = calib.court_to_image(pts).round().astype(np.int32)
+    for name, line in court_polylines(calib):
         thickness = 1 if name.endswith("center_line") else 2
-        cv2.polylines(out, [img.reshape(-1, 1, 2)], False, color, thickness, cv2.LINE_AA)
+        cv2.polylines(out, [line.round().astype(np.int32).reshape(-1, 1, 2)], False, color, thickness, cv2.LINE_AA)
     for name, (u, v) in calib.points.items():
         cv2.circle(out, (int(u), int(v)), 6, (0, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(out, name, (int(u) + 8, int(v) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
     label = f"mean fit error {calib.reprojection_error_m * 100:.0f} cm"
     cv2.putText(out, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(out, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1, cv2.LINE_AA)
+    return out
+
+
+def court_polylines(calib: Calibration, samples: int = 50) -> list[tuple[str, np.ndarray]]:
+    """The court lines as image polylines, without the parts the camera can't see.
+
+    Points behind the camera, or so close to the horizon that they land far
+    outside the frame, are dropped, and a line is split where that happens.
+    """
+    w, h = calib.image_size
+    centre = np.array([w / 2, h / 2])
+    limit = 4 * max(w, h)
+    out = []
+    for name, (a, b) in court.LINES.items():
+        pts = np.linspace(a, b, samples)
+        img = calib.court_to_image(pts)
+        ok = calib.in_front(pts) & (np.abs(img - centre) < limit).all(axis=1)
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], ok.astype(int), [0]])))
+        out += [(name, img[i:j]) for i, j in zip(edges[::2], edges[1::2]) if j - i >= 2]
     return out
 
 
