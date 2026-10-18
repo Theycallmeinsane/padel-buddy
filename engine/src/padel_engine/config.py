@@ -6,6 +6,8 @@ court; the API and CLI pass overrides through unchanged.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -78,7 +80,17 @@ class ClipsConfig(BaseModel):
     rally_min_hits: int = Field(4, ge=2, description="Fewer hits than this is a warm-up or a fault, not a rally.")
     rally_min_duration_s: float = Field(2.0, ge=0)
 
-    # Intense moments and clips
+    # What a clip is. "points": the best points, whole, from just before the
+    # serve to just after the last shot, ranked by length and shot count.
+    # "moments": pre_s/post_s around the loudest sounds; with a phone against
+    # one side's glass that mostly finds balls hitting that glass.
+    clip_mode: Literal["points", "moments"] = "points"
+    clips_per_hour: float = Field(8.0, gt=0, description="Keep only the best, about this many clips per hour of video.")
+    min_clips: int = Field(3, ge=1, description="Keep at least this many, however short the video.")
+    point_lead_s: float = Field(5.0, ge=0, description="A point clip starts this long before the serve.")
+    point_tail_s: float = Field(3.0, ge=0, description="A point clip ends this long after the last shot.")
+
+    # Intense moments (clip_mode="moments")
     intense_db: float = Field(
         6.0, gt=0, description="How much louder than a typical shot a sound must be to count as intense."
     )
@@ -86,10 +98,6 @@ class ClipsConfig(BaseModel):
         4.0, ge=0, description="Intense sounds count only during a rally or this soon after (cheers)."
     )
     moment_min_spacing_s: float = Field(10.0, ge=0, description="Keep the strongest moment within this span.")
-    moments_per_hour: float = Field(
-        8.0, gt=0, description="Keep only the best moments, about this many per hour of video."
-    )
-    min_moments: int = Field(3, ge=1, description="Keep at least this many moments, however short the video.")
     pre_s: float = Field(30.0, ge=0, description="Clip starts this long before an intense moment.")
     post_s: float = Field(30.0, ge=0, description="Clip ends this long after an intense moment.")
     max_clip_s: float = Field(
@@ -100,6 +108,11 @@ class ClipsConfig(BaseModel):
     reel_rallies: int = Field(10, ge=0, description="How many top rallies go in the reel.")
     reel_pre_s: float = Field(3.0, ge=0)
     reel_post_s: float = Field(3.0, ge=0)
+
+    # Condensed match: every point back to back, dead time cut out
+    condensed: bool = True
+    condensed_pad_s: float = Field(2.0, ge=0, description="Kept before and after each point.")
+    condensed_height: int = Field(720, ge=144, description="The condensed match is long, so it is encoded smaller.")
 
     # Encoding
     video_crf: int = Field(23, ge=0, le=51, description="x264 quality; lower is better and bigger.")

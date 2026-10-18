@@ -91,14 +91,20 @@ def clips(
     tracks: Optional[Path] = typer.Option(
         None, exists=True, help="tracks.csv from a tracking run, to rank rallies by movement too."
     ),
-    pre: Optional[float] = typer.Option(None, help="Seconds before each intense moment (default 30)."),
-    post: Optional[float] = typer.Option(None, help="Seconds after each intense moment (default 30)."),
+    mode: Optional[str] = typer.Option(None, help="points (default): best points, whole; moments: around loud sounds."),
+    pre: Optional[float] = typer.Option(None, help="moments mode: seconds before each moment (default 30)."),
+    post: Optional[float] = typer.Option(None, help="moments mode: seconds after each moment (default 30)."),
+    condensed: Optional[bool] = typer.Option(None, help="Also write the condensed match (default on)."),
     config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
 ) -> None:
-    """Find rallies and intense moments from the sound; cut clips and a highlight reel."""
+    """Find the points from the sound; cut clips, a highlight reel and a condensed match."""
     from .clips import run_clips
 
     cfg = _load_config(config)
+    if mode is not None:
+        cfg.clips = type(cfg.clips).model_validate(cfg.clips.model_dump() | {"clip_mode": mode})
+    if condensed is not None:
+        cfg.clips.condensed = condensed
     if pre is not None:
         cfg.clips.pre_s = pre
     if post is not None:
@@ -160,13 +166,14 @@ def _print_tracking(summary, out: Path) -> None:
 
 def _print_clips(summary, out: Path) -> None:
     typer.echo(
-        f"\n{summary.hits} hits, {len(summary.rallies)} rallies, "
-        f"{len(summary.moments)} intense moments -> {len(summary.clips)} clips in {out}/clips/"
+        f"\n{summary.hits} hits, {len(summary.rallies)} rallies -> {len(summary.clips)} clips in {out}/clips/"
     )
     for c in summary.clips:
-        typer.echo(f"  {c.file}  {_mmss(c.start_s)}-{_mmss(c.end_s)}  peak {_mmss(c.peak_s)}")
+        typer.echo(f"  {c.file}  {_mmss(c.start_s)}-{_mmss(c.end_s)}  ({c.end_s - c.start_s:.0f} s)")
     if summary.highlights:
         typer.echo(f"Highlight reel: {out}/{summary.highlights}")
+    if summary.condensed:
+        typer.echo(f"Condensed match ({_mmss(summary.condensed_s)}): {out}/{summary.condensed}")
 
 
 def _mmss(t: float) -> str:

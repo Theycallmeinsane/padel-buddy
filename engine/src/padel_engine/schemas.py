@@ -63,10 +63,11 @@ class ClipInfo(BaseModel):
     file: str  # relative path inside the run folder
     start_s: float
     end_s: float
-    peak_s: float  # the most intense moment in the clip
+    peak_s: float  # middle of the best point, or the most intense moment
     moments: list[int]
     score: float
     thumbnail: str | None = None
+    rallies: list[int] = []  # the points in the clip (clip_mode="points")
 
 
 class ClipsSummary(BaseModel):
@@ -79,4 +80,6 @@ class ClipsSummary(BaseModel):
     clips: list[ClipInfo]
     highlights: str | None  # relative path of the highlight reel, if any rally was found
     highlight_segments: list[tuple[float, float]]
+    condensed: str | None = None  # every point back to back
+    condensed_s: float | None = None
     outputs: dict[str, str]

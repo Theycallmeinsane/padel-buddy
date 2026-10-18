@@ -1,12 +1,14 @@
-"""Rally detection, intense-moment clips and the highlight reel for one video.
+"""Points, clips, the highlight reel and a condensed match for one video.
 
 Writes into the run folder (the same one tracking uses, if it ran first):
 
     hits.csv              every detected ball hit: time and strength
-    clips.json            rallies, intense moments and clips (schemas.ClipsSummary)
-    clips/clip_001.mp4    pre_s before to post_s after each intense moment
-    clips/clip_001.jpg    thumbnail at the clip's most intense moment
+    clips.json            rallies, moments and clips (schemas.ClipsSummary)
+    clips/clip_001.mp4    one of the best points, whole (or, with
+                          clip_mode="moments", pre_s/post_s around a loud moment)
+    clips/clip_001.jpg    thumbnail from the middle of the point
     highlights.mp4        the best rallies, cut tight and joined in match order
+    condensed.mp4         every point back to back, dead time cut out (720p)
 """
 
 from __future__ import annotations
@@ -48,8 +50,12 @@ def run_clips(
     activity = events.activity_from_tracks(tracks_csv) if tracks_csv else None
     rallies, timeline = events.find_rallies(hits, feat, cfg.clips, activity)
     moments = events.find_moments(timeline, rallies, cfg.clips)
-    windows = events.clip_windows(moments, rallies, duration, cfg.clips)
+    if cfg.clips.clip_mode == "points":
+        windows = events.point_windows(rallies, duration, cfg.clips)
+    else:
+        windows = events.clip_windows(moments, rallies, duration, cfg.clips)
     segments = events.reel_segments(rallies, duration, cfg.clips)
+    condensed = events.condensed_segments(rallies, duration, cfg.clips) if cfg.clips.condensed else []
 
     clips_dir = out / "clips"
     clips_dir.mkdir(exist_ok=True)
@@ -65,10 +71,10 @@ def run_clips(
             ClipInfo(
                 index=i, file=name, start_s=round(w.start, 2), end_s=round(w.end, 2),
                 peak_s=round(w.peak_time, 2), moments=w.moments, score=round(w.score, 3),
-                thumbnail=thumb,
+                thumbnail=thumb, rallies=w.rallies,
             )
         )
-        report(0.3 + 0.5 * i / max(1, len(windows)))
+        report(0.3 + 0.3 * i / max(1, len(windows)))
 
     outputs = {"hits": "hits.csv", "clips": "clips.json"}
     highlights = None
@@ -76,6 +82,15 @@ def run_clips(
         highlights = "highlights.mp4"
         reel(video_path, [(s.start, s.end) for s in segments], out / highlights, cfg.clips.video_crf)
         outputs["highlights"] = highlights
+    report(0.65)
+    condensed_file = None
+    if condensed:
+        condensed_file = "condensed.mp4"
+        reel(
+            video_path, [(s.start, s.end) for s in condensed], out / condensed_file, cfg.clips.video_crf,
+            height=cfg.clips.condensed_height, on_part=lambda f: report(0.65 + 0.35 * f),
+        )
+        outputs["condensed"] = condensed_file
 
     summary = ClipsSummary(
         engine_version=__version__,
@@ -101,6 +116,8 @@ def run_clips(
         clips=clips,
         highlights=highlights,
         highlight_segments=[(round(s.start, 2), round(s.end, 2)) for s in segments],
+        condensed=condensed_file,
+        condensed_s=round(sum(s.duration for s in condensed), 1) if condensed else None,
         outputs=outputs,
     )
     (out / "clips.json").write_text(summary.model_dump_json(indent=2))
@@ -111,23 +128,34 @@ def run_clips(
 # -- ffmpeg -------------------------------------------------------------------
 
 
-def cut(video: str | Path, start: float, end: float, dest: Path, crf: int = 23) -> Path:
+def cut(
+    video: str | Path, start: float, end: float, dest: Path, crf: int = 23, height: int | None = None
+) -> Path:
     """Frame-accurate cut, re-encoded to H.264/AAC for any browser or phone."""
     _ffmpeg(
         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
-        *_encode_args(crf), str(dest),
+        *_encode_args(crf, height), str(dest),
     )
     return dest
 
 
-def reel(video: str | Path, spans: list[tuple[float, float]], dest: Path, crf: int = 23) -> Path:
+def reel(
+    video: str | Path,
+    spans: list[tuple[float, float]],
+    dest: Path,
+    crf: int = 23,
+    height: int | None = None,
+    on_part: Callable[[float], None] | None = None,
+) -> Path:
     """Cut each span and join them; parts share encoder settings, so joining is lossless."""
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         parts = []
         for i, (a, b) in enumerate(spans):
-            part = Path(tmp) / f"part_{i:03d}.mp4"
-            cut(video, a, b, part, crf)
+            part = Path(tmp) / f"part_{i:04d}.mp4"
+            cut(video, a, b, part, crf, height)
             parts.append(part)
+            if on_part:
+                on_part((i + 1) / len(spans))
         listing = Path(tmp) / "parts.txt"
         # ffmpeg resolves relative entries against the list's own folder.
         listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
@@ -140,9 +168,10 @@ def thumbnail(video: str | Path, at: float, dest: Path, width: int = 480) -> Pat
     return dest
 
 
-def _encode_args(crf: int) -> list[str]:
+def _encode_args(crf: int, height: int | None = None) -> list[str]:
+    scale = ["-vf", f"scale=-2:'min(ih,{height})'"] if height else []
     return [
-        "-map", "0:v:0", "-map", "0:a:0?",
+        "-map", "0:v:0", "-map", "0:a:0?", *scale,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",

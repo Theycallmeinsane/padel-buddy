@@ -1,16 +1,15 @@
-"""From hits and loudness to rallies, intense moments and clip windows.
+"""From hits to points (rallies), clips, a highlight reel and a condensed match.
 
-    hits ──► rallies (hits close together) ──► play level (typical shot loudness)
-                                                  │
-    loudness ─────────────────────────────────────┴──► intense moments: sounds
-                    clearly louder than a typical shot, during or right after
-                    a rally (smash, wall bang, cheer, shout); only the best
-                    one per rally, and only the best few per hour
-                          │
-                          └──► clip windows: pre_s before to post_s after each
-                               moment, widened to cover the whole rally,
-                               overlapping windows merged up to max_clip_s
-    rallies ──► highlight reel: the top-scoring rallies, cut tight
+    hits ──► rallies (hits close together), scored on length and shot count
+               │
+               ├──► point clips (default): the best points, whole, from just
+               │    before the serve to just after the last shot
+               ├──► highlight reel: the top-scoring rallies, cut tight
+               └──► condensed match: every point back to back
+
+    loudness ──► intense moments (clip_mode="moments"): sounds clearly louder
+                 than a typical shot, the best one per rally, pre_s/post_s
+                 around each, merged up to max_clip_s
 
 Everything here is plain numpy on timestamps, so it is cheap to re-run with
 different settings without decoding the video again.
@@ -24,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import maximum_filter1d
+from scipy.stats import rankdata
 
 from .audio import HOP_S, AudioFeatures, Hits
 from .config import ClipsConfig
@@ -68,6 +68,7 @@ class Window:
     moments: list[int] = field(default_factory=list)  # indexes into the moment list
     score: float = 0.0
     peak_time: float = 0.0
+    rallies: list[int] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -122,13 +123,16 @@ def find_rallies(
 
 
 def _score_rallies(rallies: list[Rally]) -> None:
-    """Average percentile rank of length, hit count, loudness and movement."""
+    """Average percentile rank of length, hit count and (if tracked) movement.
+
+    Loudness is left out on purpose: with the phone behind one side's glass
+    it mostly measures how close the ball came to the phone.
+    """
     if not rallies:
         return
     columns = [
         [r.duration for r in rallies],
         [r.hits for r in rallies],
-        [r.peak_excess_db for r in rallies],
     ]
     if all(r.movement_mps is not None for r in rallies):
         columns.append([r.movement_mps for r in rallies])
@@ -138,10 +142,10 @@ def _score_rallies(rallies: list[Rally]) -> None:
 
 
 def _percentile_rank(x: np.ndarray) -> np.ndarray:
+    """0 for the lowest value, 1 for the highest; ties share their average rank."""
     if len(x) == 1:
         return np.ones(1)
-    order = x.argsort().argsort()
-    return order / (len(x) - 1)
+    return (rankdata(x) - 1) / (len(x) - 1)
 
 
 # -- intense moments ----------------------------------------------------------
@@ -153,7 +157,7 @@ def find_moments(timeline: Timeline, rallies: list[Rally], cfg: ClipsConfig) -> 
 
     Most rallies have one shot well above the typical level, so clearing the
     bar only makes a sound a candidate. Each rally keeps its best candidate,
-    and only the top ``moments_per_hour`` (at least ``min_moments``) by score
+    and only the top ``clips_per_hour`` (at least ``min_clips``) by score
     are kept, so a long match gives a short list of real highlights.
 
     Falls back to the loudest instant of each of the best rallies when no
@@ -184,8 +188,7 @@ def find_moments(timeline: Timeline, rallies: list[Rally], cfg: ClipsConfig) -> 
     for m in moments:
         if m.rally not in best_per_rally or m.score > best_per_rally[m.rally].score:
             best_per_rally[m.rally] = m
-    hours = float(timeline.times[-1]) / 3600.0
-    keep = max(cfg.min_moments, int(np.ceil(hours * cfg.moments_per_hour)))
+    keep = _clip_budget(float(timeline.times[-1]), cfg)
     moments = sorted(sorted(best_per_rally.values(), key=lambda m: -m.score)[:keep], key=lambda m: m.time)
 
     if not moments:
@@ -194,6 +197,10 @@ def find_moments(timeline: Timeline, rallies: list[Rally], cfg: ClipsConfig) -> 
             t, e = _argmax_in(timeline.times, excess, r.start, r.end + cfg.moment_near_rally_s)
             moments.append(Moment(t, e, r.index, _moment_score(e, r)))
     return moments
+
+
+def _clip_budget(duration: float, cfg: ClipsConfig) -> int:
+    return max(cfg.min_clips, int(np.ceil(duration / 3600.0 * cfg.clips_per_hour)))
 
 
 def _moment_score(excess_db: float, rally: Rally) -> float:
@@ -244,6 +251,41 @@ def clip_windows(
         w.score = moments[best].score
         w.peak_time = moments[best].time
     return windows
+
+
+def point_windows(rallies: list[Rally], duration: float, cfg: ClipsConfig) -> list[Window]:
+    """The best points, whole: from ``point_lead_s`` before the serve to
+    ``point_tail_s`` after the last shot, so the build-up is always there.
+    Back-to-back picks that overlap become one clip."""
+    best = sorted(rallies, key=lambda r: -r.score)[: _clip_budget(duration, cfg)]
+    windows: list[Window] = []
+    for r in sorted(best, key=lambda r: r.start):
+        start = max(0.0, r.start - cfg.point_lead_s)
+        end = min(duration, r.end + cfg.point_tail_s)
+        if windows and start <= windows[-1].end:
+            w = windows[-1]
+            w.end = max(w.end, end)
+            w.rallies.append(r.index)
+            if r.score > w.score:
+                w.score, w.peak_time = r.score, (r.start + r.end) / 2
+        else:
+            windows.append(Window(start, end, score=r.score, peak_time=(r.start + r.end) / 2, rallies=[r.index]))
+    return windows
+
+
+def condensed_segments(rallies: list[Rally], duration: float, cfg: ClipsConfig) -> list[Window]:
+    """Every point with ``condensed_pad_s`` either side, in match order: the
+    match without the walking, ball pick-ups and towel breaks."""
+    segs: list[Window] = []
+    for r in sorted(rallies, key=lambda r: r.start):
+        start = max(0.0, r.start - cfg.condensed_pad_s)
+        end = min(duration, r.end + cfg.condensed_pad_s)
+        if segs and start <= segs[-1].end:
+            segs[-1].end = max(segs[-1].end, end)
+            segs[-1].rallies.append(r.index)
+        else:
+            segs.append(Window(start, end, rallies=[r.index]))
+    return segs
 
 
 def reel_segments(rallies: list[Rally], duration: float, cfg: ClipsConfig) -> list[Window]:
