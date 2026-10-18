@@ -83,8 +83,16 @@ export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | 
 const SETTINGS_KEY = "padel-buddy.api";
 export type ApiSettings = { baseUrl: string; token: string };
 
+// Served by `padel-buddy`, the app and the API share an origin; under
+// `npm run dev` (port 3000) the API is on localhost:8000.
+function defaultBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined" && window.location.port !== "3000") return window.location.origin;
+  return "http://localhost:8000";
+}
+
 export function loadSettings(): ApiSettings {
-  const fallback = { baseUrl: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000", token: "" };
+  const fallback = { baseUrl: defaultBaseUrl(), token: "" };
   if (typeof window === "undefined") return fallback;
   try {
     return { ...fallback, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
