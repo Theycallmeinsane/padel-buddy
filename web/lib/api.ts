@@ -56,6 +56,7 @@ export type Clip = {
   peak_s: number;
   score: number;
   thumbnail: string | null;
+  rallies?: number[]; // the points in the clip; empty for an intense-moment clip
 };
 
 export type Rally = {
@@ -74,6 +75,8 @@ export type ClipsSummary = {
   clips: Clip[];
   highlights: string | null;
   highlight_segments: [number, number][];
+  condensed?: string | null; // every point back to back
+  condensed_s?: number | null;
 };
 
 export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | null };

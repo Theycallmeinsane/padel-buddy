@@ -7,26 +7,35 @@ import { formatTime } from "./common";
 export default function Results({ api, matchId, data }: { api: Api; matchId: string; data: ResultsData }) {
   const clips = data.clips;
   const tracking = data.tracking;
+  const points = clips?.clips.some((c) => c.rallies?.length) ?? false;
   return (
     <>
       {clips && (
         <section className="card">
           <h2>Highlights</h2>
           <p className="muted small" style={{ marginTop: 0 }}>
-            {clips.hits} shots heard · {clips.rallies.length} rallies · {clips.clips.length} intense moment
-            {clips.clips.length === 1 ? "" : "s"}
+            {clips.hits} shots heard · {clips.rallies.length} points · {plural(clips.clips.length, points ? "best point" : "intense moment")}
           </p>
           {clips.highlights ? (
             <video className="reel" controls preload="metadata" src={api.fileUrl(matchId, clips.highlights)} />
           ) : (
             <p className="muted">No rallies were found in the sound, so there is no reel.</p>
           )}
+          {clips.condensed && (
+            <details style={{ marginTop: 12 }}>
+              <summary>
+                Condensed match: every point back to back
+                {clips.condensed_s ? ` (${formatTime(clips.condensed_s)})` : ""}
+              </summary>
+              <video className="reel" controls preload="none" src={api.fileUrl(matchId, clips.condensed)} />
+            </details>
+          )}
         </section>
       )}
 
       {clips && clips.clips.length > 0 && (
         <section className="card">
-          <h2>Clips</h2>
+          <h2>{points ? "Best points" : "Clips"}</h2>
           <div className="grid">
             {clips.clips.map((c) => (
               <ClipCard key={c.index} api={api} matchId={matchId} clip={c} />
@@ -119,10 +128,17 @@ function ClipCard({ api, matchId, clip }: { api: Api; matchId: string; clip: Cli
         <span>
           {formatTime(clip.start_s)} – {formatTime(clip.end_s)}
         </span>
-        <span className="muted">peak {formatTime(clip.peak_s)}</span>
+        <span className="muted">
+          {clip.rallies?.length ? plural(clip.rallies.length, "point") : `peak ${formatTime(clip.peak_s)}`} ·{" "}
+          {formatTime(clip.end_s - clip.start_s)}
+        </span>
       </div>
     </div>
   );
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 function pct(x: number | undefined): string {
