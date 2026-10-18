@@ -214,7 +214,7 @@ def test_real_engine_end_to_end(client, settings, tmp_path):
     match = client.get(f"/matches/{m['id']}").json()
     assert match["status"] == "done", match
     clips = client.get(f"/matches/{m['id']}/results").json()["clips"]
-    assert len(clips["rallies"]) == 3 and len(clips["clips"]) == 1
+    assert len(clips["rallies"]) == 3 and len(clips["clips"]) == 3 and clips["condensed"] == "condensed.mp4"
     clip = client.get(f"/matches/{m['id']}/files/{clips['clips'][0]['file']}")
     assert clip.status_code == 200 and len(clip.content) > 10_000
     ranged = client.get(f"/matches/{m['id']}/files/highlights.mp4", headers={"Range": "bytes=0-99"})
