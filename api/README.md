@@ -20,6 +20,18 @@ padel-api            # http://127.0.0.1:8000, interactive docs at /docs
 padel-worker         # in a second terminal; one per GPU
 ```
 
+Or run everything in one process on your own computer, with the web app at
+http://127.0.0.1:8000 (build it first with `npm run build` in `web/`):
+
+```bash
+padel-buddy                                  # API + worker + web app, opens the browser
+padel-buddy import ~/Videos/match.mov --analyze   # add a video already on disk
+```
+
+`import` hard-links the video into the data folder when it is on the same
+drive, so a large match takes no extra space and deleting the match never
+touches the original.
+
 Everything lands in `./data` (SQLite database, videos, outputs), which is
 git-ignored. Settings come from environment variables or `.env`; see
 `.env.example` in the repo root.
