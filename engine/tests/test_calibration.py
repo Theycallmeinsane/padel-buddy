@@ -78,3 +78,20 @@ def test_jacobian_matches_finite_differences():
         np.testing.assert_allclose(J[:, :, d], num, rtol=1e-4, atol=1e-8)
     # One pixel moves a far-wall point much further than a near one.
     assert np.linalg.norm(J[1]) > 3 * np.linalg.norm(J[0])
+
+
+def test_lines_behind_the_camera_are_not_drawn():
+    """A phone on the back glass can have the near wall under or behind it."""
+    from padel_engine.render import court_polylines
+
+    cam = Camera(pos=(5.0, 2.0, 2.0), look_at=(5.0, 11.0, 0.0))
+    calib = Calibration.from_points(clicked(cam, FAR_AND_SERVICE), (W, H))
+    assert calib.in_front([(5.0, 10.0), (5.0, 20.0)]).all()
+    assert not calib.in_front([(5.0, 0.0)]).any()
+
+    lines = dict(court_polylines(calib))
+    assert "near_wall" not in lines and "far_wall" in lines
+    # Side walls stop where they pass behind the camera, and what is left is exact.
+    left = lines["left_wall"]
+    assert len(left) < 50
+    np.testing.assert_allclose(calib.image_to_court(left)[:, 0], 0.0, atol=1e-6)
