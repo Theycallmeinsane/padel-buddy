@@ -236,21 +236,33 @@ def run_match(
     """Everything the engine can do for one match, into one run folder.
 
     Tracking runs first when a calibration is given, so clips can also use
-    player movement to rank rallies. Without a calibration only clips and
+    player movement to rank rallies; the ball is then tracked during the
+    points the clips step found. Without a calibration only clips and
     highlights are produced.
     """
+    from .ball import run_ball
     from .clips import run_clips
 
+    cfg = config or EngineConfig()
     report = on_progress or (lambda p: None)
     result: dict[str, object] = {}
     tracks = None
+    # Share of the progress bar: tracking, then clips, then the ball.
+    stages = (0.5, 0.7) if calibration is not None else (0.0, 1.0)
     if calibration is not None:
         result["tracking"] = run_tracking(
-            video_path, calibration, out_dir, config, tracker=tracker, on_progress=lambda p: report(0.7 * p)
+            video_path, calibration, out_dir, cfg, tracker=tracker, on_progress=lambda p: report(stages[0] * p)
         )
         tracks = Path(out_dir) / "tracks.csv"
-    offset = 0.7 if calibration is not None else 0.0
-    result["clips"] = run_clips(
-        video_path, out_dir, config, tracks_csv=tracks, on_progress=lambda p: report(offset + (1 - offset) * p)
+    clips = run_clips(
+        video_path, out_dir, cfg, tracks_csv=tracks,
+        on_progress=lambda p: report(stages[0] + (stages[1] - stages[0]) * p),
     )
+    result["clips"] = clips
+    if calibration is not None and cfg.ball.enabled and clips.rallies:
+        result["ball"] = run_ball(
+            video_path, calibration, out_dir, [(r.start_s, r.end_s) for r in clips.rallies], tracks, cfg,
+            on_progress=lambda p: report(stages[1] + (1 - stages[1]) * p),
+        )
+    report(1.0)
     return result

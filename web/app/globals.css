@@ -162,6 +162,7 @@ th { color: var(--muted); font-weight: 500; }
 .minimap .court-line { stroke: rgba(255, 255, 255, 0.8); stroke-width: 0.06; }
 .minimap .net { stroke: var(--text); stroke-width: 0.14; }
 .minimap .trail { fill: none; stroke: currentColor; stroke-width: 0.14; stroke-opacity: 0.55; stroke-linejoin: round; }
+.minimap .bounce { fill: #f4ff3d; stroke: #3b3b00; stroke-width: 0.05; }
 .minimap .mm-label { font-size: 0.7px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
 
 label.toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); cursor: pointer; }

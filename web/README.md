@@ -34,10 +34,12 @@ To use it from your phone on the same Wi-Fi, run the API with
   highlight reel, best points, player table and heatmaps.
 
 The viewer plays the condensed match (every point back to back) or the full
-video, and draws over it: court lines, a box per player, and a top-down
-minimap with the last two seconds of movement. Below it, a timeline of every
-point; the best ones are highlighted, and clicking one plays it. Lines and
-players need a calibrated court; they come from the engine's `overlay.json`.
+video, and draws over it: court lines, a box per player, the ball with a
+short tail and a ring where it bounces, and a top-down minimap with the last
+two seconds of movement and recent bounces. Below it, a timeline of every
+point; the best ones are highlighted, and clicking one plays it. Lines, players
+and the ball need a calibrated court; they come from the engine's `overlay.json`
+and `ball_track.json`.
 The original video only plays where the browser supports its codec (iPhone
 HEVC often doesn't), so points-only is the default.
 - **Settings** (`/settings/`): API address and optional token.

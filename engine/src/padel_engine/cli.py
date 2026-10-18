@@ -1,4 +1,4 @@
-"""Command line: ``padel-engine calibrate | check-calibration | track | clips | analyze | keypoints``."""
+"""Command line: ``padel-engine calibrate | check-calibration | track | clips | ball | analyze | keypoints``."""
 
 from __future__ import annotations
 
@@ -114,6 +114,31 @@ def clips(
 
 
 @app.command()
+def ball(
+    video: Path = typer.Argument(..., exists=True, dir_okay=False),
+    calibration: Path = typer.Option(..., "--calibration", "-c", exists=True, dir_okay=False),
+    out: Path = typer.Option(Path("runs/latest"), help="Run folder with clips.json (and tracks.csv) from earlier steps."),
+    config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+) -> None:
+    """Track the ball during the points found by `clips`, using the players' boxes from `track` if present."""
+    import json
+
+    from .ball import run_ball
+
+    clips_json = out / "clips.json"
+    if not clips_json.exists():
+        raise typer.BadParameter(f"{clips_json} not found: run `padel-engine clips` first", param_hint="--out")
+    spans = [(r["start_s"], r["end_s"]) for r in json.loads(clips_json.read_text())["rallies"]]
+    tracks = out / "tracks.csv"
+    cfg = _load_config(config)
+    calib = Calibration.load(calibration)
+    summary = _with_progress(
+        "Ball", lambda cb: run_ball(video, calib, out, spans, tracks if tracks.exists() else None, cfg, on_progress=cb)
+    )
+    _print_ball(summary, out)
+
+
+@app.command()
 def analyze(
     video: Path = typer.Argument(..., exists=True, dir_okay=False),
     calibration: Optional[Path] = typer.Option(
@@ -135,6 +160,8 @@ def analyze(
     if "tracking" in result:
         _print_tracking(result["tracking"], out)
     _print_clips(result["clips"], out)
+    if "ball" in result:
+        _print_ball(result["ball"], out)
 
 
 def _load_config(path: Optional[Path]) -> EngineConfig:
@@ -174,6 +201,13 @@ def _print_clips(summary, out: Path) -> None:
         typer.echo(f"Highlight reel: {out}/{summary.highlights}")
     if summary.condensed:
         typer.echo(f"Condensed match ({_mmss(summary.condensed_s)}): {out}/{summary.condensed}")
+
+
+def _print_ball(summary, out: Path) -> None:
+    typer.echo(
+        f"\nBall seen in {summary.seen_fraction:.0%} of {summary.searched_s / 60:.0f} min of points: "
+        f"{summary.flights} flights, {summary.bounces} bounces -> {out}/{summary.outputs['track']}"
+    )
 
 
 def _mmss(t: float) -> str:

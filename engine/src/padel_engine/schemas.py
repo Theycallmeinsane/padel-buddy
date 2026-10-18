@@ -85,3 +85,13 @@ class ClipsSummary(BaseModel):
     # (start in the match, end in the match, start in condensed.mp4) per point
     condensed_segments: list[tuple[float, float, float]] = []
     outputs: dict[str, str]
+
+
+class BallSummary(BaseModel):
+    engine_version: str
+    searched_s: float  # seconds of video searched: the points, padded
+    ball_frames: int  # frames with a ball position
+    seen_fraction: float  # of the frames searched
+    flights: int  # continuous stretches of ball flight
+    bounces: int  # on the court floor
+    outputs: dict[str, str]

@@ -119,6 +119,35 @@ class ClipsConfig(BaseModel):
     thumbnails: bool = True
 
 
+class BallConfig(BaseModel):
+    """Classical ball tracking (frame differencing), run during points only.
+
+    Pixel sizes are at the analysis width, not the source video's.
+    """
+
+    enabled: bool = Field(True, description="Track the ball when the court is calibrated.")
+    width: int = Field(960, ge=320, description="Frames are shrunk to this width first.")
+    span_pad_s: float = Field(1.0, ge=0, description="Tracked before and after each point.")
+    diff_threshold: int = Field(18, ge=1, le=255, description="Brightness change that counts as motion.")
+    min_area: int = Field(2, ge=1)
+    max_area: int = Field(120, ge=1, description="Bigger moving blobs are people, rackets or shadows.")
+    max_size_px: int = Field(18, ge=1)
+    max_aspect: float = Field(3.5, ge=1, description="Motion blur stretches the ball, but not this much.")
+    player_margin_px: int = Field(4, ge=0, description="Blobs this close to a player's box are ignored.")
+    flicker_rate: float = Field(0.03, gt=0, le=1, description="How fast the persistent-motion mask learns.")
+    flicker_max: float = Field(0.25, gt=0, le=1, description="Pixels moving this often (lights, fences) are ignored.")
+    gate_px: float = Field(45.0, gt=0, description="How far a blob may be from where the flight predicts.")
+    max_miss: int = Field(3, ge=0, description="Frames a flight may go unseen (occlusion) before it ends.")
+    min_points: int = Field(6, ge=3, description="Shorter flights are noise.")
+    min_travel_px: float = Field(25.0, ge=0)
+    max_step_px: float = Field(60.0, gt=0, description="Larger jumps between frames are not one ball.")
+    max_wobble_px: float = Field(4.0, gt=0, description="Median change of velocity; a ball flies smoothly.")
+    ignore_regions: list[list[tuple[float, float]]] = Field(
+        [], description="Polygons, in the calibration image's pixels, where motion is never the ball: "
+        "a neighbouring court seen through the glass, spectators, a scoreboard.",
+    )
+
+
 class OutputConfig(BaseModel):
     preview_video: bool = True
     heatmaps: bool = True
@@ -130,4 +159,5 @@ class EngineConfig(BaseModel):
     analytics: AnalyticsConfig = AnalyticsConfig()
     audio: AudioConfig = AudioConfig()
     clips: ClipsConfig = ClipsConfig()
+    ball: BallConfig = BallConfig()
     output: OutputConfig = OutputConfig()

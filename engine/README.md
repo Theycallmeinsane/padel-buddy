@@ -7,6 +7,7 @@ Current scope:
 
 - **Step 1: court mapping and player tracking** (needs a calibration)
 - **Step 2: rallies, clips and highlights** (from the sound; works without calibration)
+- **Step 3: ball tracking and bounces** (during points; needs a calibration)
 
 ## Install
 
@@ -31,7 +32,10 @@ padel-engine track match.mp4 -c calibration.json --out runs/match1 --device cuda
 # Clips and highlights from the sound (add --tracks runs/match1/tracks.csv to use movement too).
 padel-engine clips match.mp4 --out runs/match1
 
-# Or everything in one go (tracking only if -c is given).
+# The ball, during the points clips found (uses the players' boxes from track).
+padel-engine ball match.mp4 -c calibration.json --out runs/match1
+
+# Or everything in one go (tracking and the ball only if -c is given).
 padel-engine analyze match.mp4 -c calibration.json --out runs/match1
 ```
 
@@ -60,6 +64,8 @@ Each run folder contains:
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | The video with player boxes and a live top-down minimap |
 | `overlay.json` | Court lines in the image and every player's box and smoothed court position, for the app's viewer |
+| `ball.json` | How much of the points the ball was found in, flights and bounces |
+| `ball_track.json` | The ball's position in every frame it was found, and each bounce in court metres |
 | `hits.csv` | Every detected ball hit: time and strength |
 | `clips.json` | Rallies (points), intense moments and clips with their times and scores |
 | `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |
@@ -113,8 +119,27 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    clips run from 30 s before to 30 s after each one, widened so a rally is
    never cut mid-point. They are still listed in `clips.json` in points mode.
 
-Settings live in `padel_engine/config.py` (the `audio` and `clips` sections
-cover all of the above); pass a JSON file of overrides with `--config`.
+11. **Ball** (with a calibration), during each point plus a second either
+   side, on frames shrunk to 960 px wide. A pixel is moving when it differs
+   from both the previous and the next frame. Pixels that move most of the
+   time (lights, fences), the players' boxes, anything below the court floor
+   as the camera sees it, and any `ball.ignore_regions` are masked out.
+   Small compact moving spots are linked frame to frame with a
+   constant-velocity guess into flights; a flight must travel and move
+   smoothly, which drops arms and rackets. Where flights claim the same
+   frame the longest wins. A **bounce** is where a flight is lowest in the
+   image and that spot is on the court: the down and up paths are crossed to
+   find the contact between frames, because the nearest frame has the ball
+   a little up, which at the far wall moves the bounce most of a metre.
+
+Settings live in `padel_engine/config.py` (the `audio`, `clips` and `ball`
+sections cover all of the above); pass a JSON file of overrides with `--config`.
+For example, to rule out a neighbouring court seen through the glass (pixels
+of the image you calibrated on):
+
+```json
+{"ball": {"ignore_regions": [[[0, 540], [690, 540], [705, 633], [0, 930]]]}}
+```
 
 ## Tests
 
@@ -138,5 +163,12 @@ so they need neither a GPU nor real footage. Clip tests need FFmpeg.
 - Hits from a neighbouring court sound the same as ours. Rallies there can
   show up as rallies here; player movement (from tracking) and, later, ball
   tracking will filter them.
+- The ball tracker has no model of what a ball looks like, only of how it
+  moves. A ball in front of a busy background, or very small at the far
+  wall, is missed, and a fast racket can pass for a short flight. A trained
+  detector (TrackNet, fine-tuned on padel frames) is the next step; it
+  replaces only the candidate stage.
+- Motion seen through the glass (the next court, people walking past) can
+  look like a ball. Rule those areas out with `ball.ignore_regions`.
 - Hit sensitivity and the "intense" bar are tuned on synthetic audio and
   need checking against real recordings and phone microphones.

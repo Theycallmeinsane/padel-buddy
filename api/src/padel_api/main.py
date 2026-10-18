@@ -8,7 +8,7 @@ Flow for one match:
     PUT  /matches/{id}/calibration        the clicked points (optional: enables tracking)
     POST /matches/{id}/analyze            queue the engine
     GET  /matches/{id}                    status and progress
-    GET  /matches/{id}/results            tracking + clips summaries
+    GET  /matches/{id}/results            tracking, clips and ball summaries
     GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, overlay data
 
 Run with ``padel-api`` (or ``uvicorn padel_api.main:create_app --factory``).
@@ -257,7 +257,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def results(match: Match = Depends(load_match)) -> dict:
         run = storage.run_dir(match.id)
         out = {}
-        for key, name in (("tracking", "summary.json"), ("clips", "clips.json")):
+        for key, name in (("tracking", "summary.json"), ("clips", "clips.json"), ("ball", "ball.json")):
             f = run / name
             out[key] = json.loads(f.read_text()) if f.exists() else None
         return out
