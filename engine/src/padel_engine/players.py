@@ -9,6 +9,10 @@ Slots are seeded by where players stand when first seen:
     P1 near-left, P2 near-right  -> team A (camera side at the start)
     P3 far-left,  P4 far-right   -> team B
 and then follow their player through side switches and changeovers.
+
+People watching stand just outside the glass, by the net posts and the side
+fences, so only someone inside the lines can become a player or replace a
+lost one, and a player followed outside the lines for long is let go.
 """
 
 from __future__ import annotations
@@ -45,6 +49,8 @@ class _Slot:
     last_time: float = -np.inf
     track_id: int | None = None
     appearance: np.ndarray | None = None
+    outside_since: float | None = None
+    released: bool = False
 
     @property
     def initialised(self) -> bool:
@@ -61,36 +67,54 @@ class PlayerAssigner:
 
     def assign(self, time_s: float, candidates: list[Candidate]) -> dict[str, int]:
         """Match candidates at ``time_s`` to players. Returns player id -> candidate index."""
+        boxes = [c.detection.bbox for c in candidates]
+        distinct = distinct_people(boxes, self.cfg.duplicate_overlap, self.cfg.duplicate_area_ratio)
         on_court = [
-            i
-            for i, c in enumerate(candidates)
-            if court.inside(*c.court_xy, margin=self.cfg.court_margin_m)
+            i for i in distinct if court.inside(*candidates[i].court_xy, margin=self.cfg.court_margin_m)
         ]
-        result: dict[str, int] = {}
+        in_lines = {i for i in on_court if self._in_lines(candidates[i].court_xy)}
+        for slot in self.slots.values():
+            if slot.outside_since is not None and time_s - slot.outside_since >= self.cfg.outside_release_s:
+                slot.released = True
 
         active = [s for s in self.slots.values() if s.initialised and not self._lost(s, time_s)]
         lost = [s for s in self.slots.values() if s.initialised and self._lost(s, time_s)]
 
-        # Players we are following get first pick; lost players may only take
-        # people nobody else claimed, so they cannot steal a tracked player.
-        free = on_court
-        for group in (active, lost):
-            matched = self._match(group, [candidates[i] for i in free], time_s)
-            for pid, j in matched.items():
-                result[pid] = free[j]
-            taken = set(result.values())
-            free = [i for i in on_court if i not in taken]
+        # Players we are following get first pick. Lost players may only take
+        # people nobody else claimed, so they cannot steal a tracked player,
+        # and only inside the lines, so they cannot pick up someone watching.
+        matched = self._match(active, [candidates[i] for i in on_court], time_s)
+        result = {pid: on_court[j] for pid, j in matched.items()}
+        free = [i for i in on_court if i in in_lines and i not in result.values()]
+        matched = self._match(lost, [candidates[i] for i in free], time_s)
+        result.update({pid: free[j] for pid, j in matched.items()})
+        free = [i for i in free if i not in result.values()]
 
         self._seed_new_players(time_s, candidates, free, result)
 
+        # Colours are learnt only from clear views inside the lines, so a slot
+        # that briefly follows the wrong person keeps its player's look.
+        clear = unobstructed([boxes[i] for i in distinct])
+        learn = {i for i, ok in zip(distinct, clear) if ok and i in in_lines}
         for pid, idx in result.items():
-            self._update(self.slots[pid], candidates[idx], time_s)
+            self._update(self.slots[pid], candidates[idx], time_s, idx in in_lines, idx in learn)
         return result
 
     # -- internals --------------------------------------------------------
 
     def _lost(self, slot: _Slot, time_s: float) -> bool:
-        return time_s - slot.last_time > self.cfg.reacquire_after_s
+        return slot.released or time_s - slot.last_time > self.cfg.reacquire_after_s
+
+    def _in_lines(self, xy: np.ndarray) -> bool:
+        side, end = self.cfg.side_tolerance_m, self.cfg.end_tolerance_m
+        return -side <= xy[0] <= court.WIDTH + side and -end <= xy[1] <= court.LENGTH + end
+
+    def _reacquire_limit(self, slot: _Slot, time_s: float) -> float:
+        """Largest colour distance a lost player accepts; it relaxes the longer they stay lost."""
+        cfg = self.cfg
+        lost_for = time_s - slot.last_time - cfg.reacquire_after_s
+        relax = min(max(lost_for / cfg.reacquire_relax_s, 0.0), 1.0)
+        return cfg.reacquire_max_appearance + (1.0 - cfg.reacquire_max_appearance) * relax
 
     def _match(self, slots: list[_Slot], cands: list[Candidate], time_s: float) -> dict[str, int]:
         if not slots or not cands:
@@ -104,15 +128,23 @@ class PlayerAssigner:
     def _cost(self, slot: _Slot, cand: Candidate, time_s: float) -> float:
         cfg = self.cfg
         dist = float(np.linalg.norm(cand.court_xy - slot.xy))
+        app = appearance_distance(slot.appearance, cand.appearance)
         if self._lost(slot, time_s):
             # Position says little after a long absence; lean on appearance.
+            if app > self._reacquire_limit(slot, time_s):
+                return _INFEASIBLE
             pos = 0.5 * min(dist / court.WIDTH, 1.0)
         else:
             gate = cfg.base_gate_m + cfg.max_speed_mps * (time_s - slot.last_time)
             if dist > gate:
                 return _INFEASIBLE
+            # Off court, only follow whom the detector says is the same person:
+            # a missed player is not swapped for someone watching nearby.
+            if not self._in_lines(cand.court_xy) and (
+                slot.track_id is None or cand.detection.track_id != slot.track_id
+            ):
+                return _INFEASIBLE
             pos = dist / gate
-        app = appearance_distance(slot.appearance, cand.appearance)
         cost = pos + cfg.appearance_weight * app
         if slot.track_id is not None and slot.track_id == cand.detection.track_id:
             cost -= cfg.track_id_bonus
@@ -136,16 +168,56 @@ class PlayerAssigner:
             for pid, i in zip(open_slots, here):
                 result[pid] = i
 
-    def _update(self, slot: _Slot, cand: Candidate, time_s: float) -> None:
+    def _update(self, slot: _Slot, cand: Candidate, time_s: float, inside: bool, learn: bool) -> None:
         slot.xy = cand.court_xy.copy()
         slot.last_time = time_s
         slot.track_id = cand.detection.track_id
-        if cand.appearance is not None:
+        slot.released = False
+        if inside:
+            slot.outside_since = None
+        elif slot.outside_since is None:
+            slot.outside_since = time_s
+        if learn and cand.appearance is not None:
             if slot.appearance is None:
                 slot.appearance = cand.appearance.copy()
             else:
                 m = self.cfg.appearance_momentum
                 slot.appearance = (1 - m) * slot.appearance + m * cand.appearance
+
+
+def _area(b: tuple[float, float, float, float]) -> float:
+    return max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0)
+
+
+def _intersection(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    return max(min(a[2], b[2]) - max(a[0], b[0]), 0.0) * max(min(a[3], b[3]) - max(a[1], b[1]), 0.0)
+
+
+def distinct_people(boxes: list, overlap: float = 0.8, area_ratio: float = 0.4) -> list[int]:
+    """Indices of boxes left after dropping second boxes on one person.
+
+    The detector sometimes boxes a person twice (whole body and upper body).
+    A box mostly inside another of similar size is the same person; a far
+    player seen behind a near one is much smaller, so both are kept. The
+    larger box wins because it is more likely to reach the feet.
+    """
+    keep: list[int] = []
+    for i in sorted(range(len(boxes)), key=lambda i: -_area(boxes[i])):
+        a = _area(boxes[i])
+        same = any(
+            _intersection(boxes[i], boxes[k]) >= overlap * a and a >= area_ratio * _area(boxes[k]) for k in keep
+        )
+        if not same:
+            keep.append(i)
+    return sorted(keep)
+
+
+def unobstructed(boxes: list, max_covered: float = 0.2) -> list[bool]:
+    """Whether each box is clear of the others, so its colours are only its own person's."""
+    return [
+        all(_intersection(b, o) <= max_covered * _area(b) for j, o in enumerate(boxes) if j != i)
+        for i, b in enumerate(boxes)
+    ]
 
 
 def appearance_of(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray | None:

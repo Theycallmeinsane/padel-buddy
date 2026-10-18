@@ -32,7 +32,7 @@ def test_end_to_end_outputs(tmp_path):
          ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
         (W, H),
     )
-    cfg = EngineConfig()
+    cfg = EngineConfig.model_validate({"output": {"preview_video": True}})  # off by default
     stride = round(SRC_FPS / cfg.tracking.process_fps)
     tracker = ScriptedTracker(cam, gt, stride=stride, fps=SRC_FPS)
     progress = []

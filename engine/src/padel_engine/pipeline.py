@@ -9,7 +9,7 @@ writes everything to one run folder:
     summary.json            per-player movement stats (schemas.TrackingSummary)
     overlay.json            court lines and smoothed player positions for the app
     heatmaps/P1.png ...     top-down occupancy per player, plus all.png
-    preview.mp4             annotated video with a live minimap
+    preview.mp4             annotated video with a live minimap (output.preview_video)
 """
 
 from __future__ import annotations
