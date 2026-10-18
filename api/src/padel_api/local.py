@@ -70,12 +70,13 @@ def serve(settings: Settings, host: str, port: int, browser: bool = True, with_w
     if settings.web_dir is None:
         log.warning("No web app build found (run `npm run build` in web/); serving the API only")
 
+    app = create_app(settings)  # creates the database before the worker opens it
     stop = threading.Event()
     if with_worker:
         threading.Thread(target=worker.run_forever, args=(settings, stop), name="worker", daemon=True).start()
 
     url = f"http://{host}:{port}/"
-    config = uvicorn.Config(create_app(settings), host=host, port=port, log_level="info")
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     if browser:
         threading.Timer(1.5, webbrowser.open, args=(url,)).start()
