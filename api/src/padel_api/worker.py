@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import signal
 import socket
-import time
+import threading
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -74,32 +74,34 @@ def run_once(db: Database, storage: LocalStorage, worker: str, runner: Runner = 
         return True
 
 
-def main(settings: Settings | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    settings = settings or get_settings()
+def run_forever(settings: Settings, stop: threading.Event) -> None:
+    """Poll for jobs until ``stop`` is set (checked between jobs)."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)  # the worker may start before the API
     db = Database(settings.db_url)
     db.create_all()
     storage = LocalStorage(settings.data_dir)
     name = f"{socket.gethostname()}:{id(db)}"
 
-    stopping = False
-
-    def stop(*_):
-        nonlocal stopping
-        stopping = True
-        log.info("stopping after the current job")
-
-    signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGTERM, stop)
-
     log.info("worker %s polling %s", name, settings.db_url.split("@")[-1])
-    while not stopping:
+    while not stop.is_set():
         with db.sessions() as s:
             if n := jobs.requeue_stale(s, settings.stale_job_s):
                 log.warning("re-queued %d stale job(s)", n)
         if not run_once(db, storage, name):
-            time.sleep(settings.worker_poll_s)
+            stop.wait(settings.worker_poll_s)
+
+
+def main(settings: Settings | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    stop = threading.Event()
+
+    def on_signal(*_):
+        stop.set()
+        log.info("stopping after the current job")
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    run_forever(settings or get_settings(), stop)
 
 
 if __name__ == "__main__":  # pragma: no cover
