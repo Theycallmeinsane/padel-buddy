@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, create_engine, event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -76,7 +77,12 @@ class Database:
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_all(self) -> None:
-        Base.metadata.create_all(self.engine)
+        try:
+            Base.metadata.create_all(self.engine)
+        except OperationalError:
+            # The API and a worker starting together on a fresh database can
+            # both try to create a table; the second pass finds them all.
+            Base.metadata.create_all(self.engine)
 
     def session(self) -> Iterator[Session]:
         with self.sessions() as s:
