@@ -9,7 +9,7 @@ Flow for one match:
     POST /matches/{id}/analyze            queue the engine
     GET  /matches/{id}                    status and progress
     GET  /matches/{id}/results            tracking + clips summaries
-    GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, preview
+    GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, overlay data
 
 Run with ``padel-api`` (or ``uvicorn padel_api.main:create_app --factory``).
 ``padel-buddy`` (see ``local.py``) runs the API, a worker and the web app in
@@ -18,6 +18,7 @@ one process for use on your own computer.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import secrets
@@ -262,10 +263,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return out
 
     @app.get("/matches/{match_id}/files/{rel:path}", dependencies=auth)
-    def run_file(rel: str, match: Match = Depends(load_match)) -> FileResponse:
+    def run_file(rel: str, request: Request, match: Match = Depends(load_match)) -> Response:
         path = storage.run_file(match.id, rel)
         if path is None:
             raise HTTPException(404, "No such output")
+        if path.suffix == ".json" and "gzip" in request.headers.get("accept-encoding", ""):
+            # A long match's overlay is megabytes of numbers; gzip makes it about 5x smaller.
+            return Response(
+                gzip.compress(path.read_bytes(), compresslevel=5),
+                media_type="application/json",
+                headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+            )
         return FileResponse(path)
 
     if settings.web_dir is not None:

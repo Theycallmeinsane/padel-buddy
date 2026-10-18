@@ -3,6 +3,7 @@ import json
 
 import cv2
 import numpy as np
+import pytest
 
 from padel_engine import analytics, court
 from padel_engine.calibration import Calibration
@@ -59,6 +60,18 @@ def test_end_to_end_outputs(tmp_path):
         assert abs(sum(p.zone_share.values()) - 1) < 1e-9
     b1 = next(p for p in summary.players if p.player == "P3")
     assert b1.zone_share["back"] > 0.9
+
+    # The app's overlay: one sample per tracks.csv row, positions in court metres.
+    overlay = json.loads((run / "overlay.json").read_text())
+    assert summary.outputs["overlay"] == "overlay.json" and overlay["size"] == [W, H]
+    assert {line["name"] for line in overlay["lines"]} >= {"net", "far_wall", "near_service_line"}
+    for pid, p in overlay["players"].items():
+        mine = [r for r in rows if r["player"] == pid]
+        assert len(p["t"]) == len(mine) and len(p["box"]) == 4 * len(mine) and len(p["xy"]) == 2 * len(mine)
+        assert p["t"][0] == pytest.approx(float(mine[0]["time_s"]), abs=0.01)
+        assert p["box"][:4] == [round(float(mine[0][k])) for k in ("x1", "y1", "x2", "y2")]
+        xy = np.array(p["xy"]).reshape(-1, 2)
+        assert ((xy >= -1) & (xy <= [11, 21])).all()
 
 
 def test_zone_and_side_conventions():

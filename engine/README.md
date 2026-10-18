@@ -59,6 +59,7 @@ Each run folder contains:
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | The video with player boxes and a live top-down minimap |
+| `overlay.json` | Court lines in the image and every player's box and smoothed court position, for the app's viewer |
 | `hits.csv` | Every detected ball hit: time and strength |
 | `clips.json` | Rallies (points), intense moments and clips with their times and scores |
 | `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |

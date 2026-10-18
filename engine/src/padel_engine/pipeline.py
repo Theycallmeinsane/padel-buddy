@@ -7,6 +7,7 @@ writes everything to one run folder:
     calibration_check.jpg   court model drawn over a frame (verify the fit)
     tracks.csv              one row per player per analysed frame
     summary.json            per-player movement stats (schemas.TrackingSummary)
+    overlay.json            court lines and smoothed player positions for the app
     heatmaps/P1.png ...     top-down occupancy per player, plus all.png
     preview.mp4             annotated video with a live minimap
 """
@@ -14,6 +15,7 @@ writes everything to one run folder:
 from __future__ import annotations
 
 import csv
+import json
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -116,7 +118,9 @@ def run_tracking(
         make_browser_friendly(preview_path)
         outputs["preview"] = "preview.mp4"
 
-    players = _player_stats(rows, analysed, calib, cfg, out, outputs)
+    players, smoothed = _player_stats(rows, analysed, calib, cfg, out, outputs)
+    _write_overlay(out / "overlay.json", calib, fps, rows, smoothed)
+    outputs["overlay"] = "overlay.json"
 
     summary = TrackingSummary(
         engine_version=__version__,
@@ -140,12 +144,13 @@ def run_tracking(
 
 def _player_stats(
     rows: list[dict], analysed: int, calib: Calibration, cfg: EngineConfig, out: Path, outputs: dict[str, str]
-) -> list[PlayerStats]:
+) -> tuple[list[PlayerStats], dict[str, analytics.Trajectory]]:
     topdown = render.TopDown()
     if cfg.output.heatmaps:
         (out / "heatmaps").mkdir(exist_ok=True)
     all_xy = []
     stats = []
+    smoothed = {}
     for pid in PLAYER_IDS:
         mine = [r for r in rows if r["player"] == pid]
         traj = analytics.Trajectory(
@@ -158,6 +163,7 @@ def _player_stats(
         J = calib.jacobian(feet)
         meas_cov = cfg.analytics.foot_pixel_noise**2 * J @ J.transpose(0, 2, 1)
         smooth = analytics.smooth(traj, cfg.analytics, meas_cov)
+        smoothed[pid] = smooth
         move = analytics.movement(smooth, cfg.analytics, cfg.tracking.max_speed_mps)
         all_xy.append(smooth.xy)
 
@@ -183,7 +189,40 @@ def _player_stats(
         xy = np.concatenate(all_xy) if all_xy else np.zeros((0, 2))
         cv2.imwrite(str(out / "heatmaps/all.png"), topdown.heatmap(analytics.occupancy_grid(xy, cfg.analytics.heatmap_cell_m)))
         outputs["heatmap_all"] = "heatmaps/all.png"
-    return stats
+    return stats, smoothed
+
+
+def _write_overlay(
+    path: Path, calib: Calibration, fps: float, rows: list[dict], smoothed: dict[str, analytics.Trajectory]
+) -> None:
+    """What the app draws over the video: court lines, player boxes, positions.
+
+    Pixels are in the source video's resolution; the app scales them to
+    whatever it plays (the condensed match is 720p). Per player, sample ``i``
+    is ``t[i]``, ``box[4i:4i+4]`` (x1, y1, x2, y2) and ``xy[2i:2i+2]``
+    (smoothed court metres). Arrays are flat to keep a long match's file small.
+    """
+    players = {}
+    for pid, traj in smoothed.items():
+        mine = [r for r in rows if r["player"] == pid]
+        players[pid] = {
+            "team": TEAM_OF[pid],
+            "t": [round(float(t), 2) for t in traj.t],
+            "box": [round(r[k]) for r in mine for k in ("x1", "y1", "x2", "y2")],
+            "xy": [round(float(v), 2) for v in traj.xy.reshape(-1)],
+        }
+    data = {
+        "version": 1,
+        "size": list(calib.image_size),
+        "fps": round(fps, 3),
+        "court_to_image": calib.H_inv.tolist(),
+        "lines": [
+            {"name": name, "points": [[round(float(u), 1), round(float(v), 1)] for u, v in line]}
+            for name, line in render.court_polylines(calib, samples=20)
+        ],
+        "players": players,
+    }
+    path.write_text(json.dumps(data, separators=(",", ":")))
 
 
 def run_match(

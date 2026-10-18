@@ -82,4 +82,6 @@ class ClipsSummary(BaseModel):
     highlight_segments: list[tuple[float, float]]
     condensed: str | None = None  # every point back to back
     condensed_s: float | None = None
+    # (start in the match, end in the match, start in condensed.mp4) per point
+    condensed_segments: list[tuple[float, float, float]] = []
     outputs: dict[str, str]

@@ -77,6 +77,18 @@ export type ClipsSummary = {
   highlight_segments: [number, number][];
   condensed?: string | null; // every point back to back
   condensed_s?: number | null;
+  condensed_segments?: [number, number, number][]; // match start, match end, start in condensed
+};
+
+/** What the viewer draws over the video (the engine's overlay.json). */
+export type Overlay = {
+  version: number;
+  size: [number, number]; // source video pixels, which boxes and lines are in
+  fps: number;
+  court_to_image: number[][];
+  lines: { name: string; points: [number, number][] }[];
+  // Sample i: t[i], box[4i..4i+3] = x1 y1 x2 y2, xy[2i..2i+1] = court metres
+  players: Record<string, { team: "A" | "B"; t: number[]; box: number[]; xy: number[] }>;
 };
 
 export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | null };
@@ -182,4 +194,6 @@ export class Api {
   results = (id: string) => this.request<Results>(`/matches/${id}/results`);
   frameUrl = (id: string, t: number) => this.media(`/matches/${id}/frame?t=${t}`);
   fileUrl = (id: string, rel: string) => this.media(`/matches/${id}/files/${rel}`);
+  videoUrl = (id: string) => this.media(`/matches/${id}/video`);
+  overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`);
 }

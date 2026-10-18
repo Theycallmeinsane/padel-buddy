@@ -84,9 +84,10 @@ def run_clips(
         outputs["highlights"] = highlights
     report(0.65)
     condensed_file = None
+    condensed_offsets: list[float] = []
     if condensed:
         condensed_file = "condensed.mp4"
-        reel(
+        condensed_offsets = reel(
             video_path, [(s.start, s.end) for s in condensed], out / condensed_file, cfg.clips.video_crf,
             height=cfg.clips.condensed_height, on_part=lambda f: report(0.65 + 0.35 * f),
         )
@@ -118,6 +119,9 @@ def run_clips(
         highlight_segments=[(round(s.start, 2), round(s.end, 2)) for s in segments],
         condensed=condensed_file,
         condensed_s=round(sum(s.duration for s in condensed), 1) if condensed else None,
+        condensed_segments=[
+            (round(s.start, 2), round(s.end, 2), round(off, 3)) for s, off in zip(condensed, condensed_offsets)
+        ],
         outputs=outputs,
     )
     (out / "clips.json").write_text(summary.model_dump_json(indent=2))
@@ -146,21 +150,43 @@ def reel(
     crf: int = 23,
     height: int | None = None,
     on_part: Callable[[float], None] | None = None,
-) -> Path:
-    """Cut each span and join them; parts share encoder settings, so joining is lossless."""
+) -> list[float]:
+    """Cut each span and join them; parts share encoder settings, so joining is lossless.
+
+    Returns where each span starts in the joined video. Each cut comes out a
+    few milliseconds off its nominal length (whole frames, audio priming), so
+    over hundreds of points only the measured lengths keep the app's overlays
+    in sync.
+    """
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         parts = []
+        offsets = []
+        at = 0.0
         for i, (a, b) in enumerate(spans):
             part = Path(tmp) / f"part_{i:04d}.mp4"
             cut(video, a, b, part, crf, height)
             parts.append(part)
+            offsets.append(at)
+            at += media_duration(part)
             if on_part:
                 on_part((i + 1) / len(spans))
         listing = Path(tmp) / "parts.txt"
         # ffmpeg resolves relative entries against the list's own folder.
         listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
         _ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(dest))
-    return dest
+    return offsets
+
+
+def media_duration(path: Path) -> float:
+    """Container duration, which is what ffmpeg's concat uses to place the next file."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        return float(proc.stdout.strip())
+    except ValueError as e:
+        raise audio.AudioError(f"ffprobe could not read {path}: {proc.stderr.strip()}") from e
 
 
 def thumbnail(video: str | Path, at: float, dest: Path, width: int = 480) -> Path:
