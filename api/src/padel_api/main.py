@@ -12,6 +12,8 @@ Flow for one match:
     GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, preview
 
 Run with ``padel-api`` (or ``uvicorn padel_api.main:create_app --factory``).
+``padel-buddy`` (see ``local.py``) runs the API, a worker and the web app in
+one process for use on your own computer.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -265,7 +268,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "No such output")
         return FileResponse(path)
 
+    if settings.web_dir is not None:
+        # Mounted last, so API routes win; html=True serves /match/ as match/index.html.
+        app.mount("/", StaticFiles(directory=settings.web_dir, html=True), name="web")
     return app
+
+
+def import_video(settings: Settings, src: Path, title: str | None = None) -> Match:
+    """Register a video already on this computer as a match, without uploading it.
+
+    The file is hard-linked into the data folder when both are on the same
+    drive (instant, no extra space; deleting the match leaves the original),
+    and copied otherwise.
+    """
+    import os
+    import shutil
+
+    src = Path(src)
+    ext = src.suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTS:
+        raise ValueError(f"Unsupported video type {ext}; use one of {sorted(ALLOWED_VIDEO_EXTS)}")
+    if not src.is_file():
+        raise FileNotFoundError(src)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    db = Database(settings.db_url)
+    db.create_all()
+    storage = LocalStorage(settings.data_dir)
+    with db.sessions() as session:
+        size = src.stat().st_size
+        match = Match(title=title or src.stem, video_ext=ext, video_size=size, status="uploading")
+        session.add(match)
+        session.commit()
+        dest = storage.video_path(match.id, ext)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(src, dest)
+        except OSError:
+            shutil.copy2(src, dest)
+        match.video_received = size
+        _finish_upload(match, dest)
+        session.commit()
+        session.refresh(match)
+        session.expunge(match)
+        return match
 
 
 # -- helpers ------------------------------------------------------------------

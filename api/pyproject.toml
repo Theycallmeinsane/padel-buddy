@@ -24,6 +24,7 @@ dev = ["pytest>=8", "httpx>=0.27"]
 [project.scripts]
 padel-api = "padel_api.main:serve"
 padel-worker = "padel_api.worker:main"
+padel-buddy = "padel_api.local:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/padel_api"]

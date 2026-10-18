@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     max_upload_gb: float = Field(25.0, gt=0)
     worker_poll_s: float = Field(2.0, gt=0)
     stale_job_s: float = Field(600.0, gt=0, description="A running job silent this long is re-queued.")
+    web_dir: Path | None = Field(
+        None, description="A built web app (web/out) to serve at /, so one process gives the whole app."
+    )
 
     @property
     def db_url(self) -> str:

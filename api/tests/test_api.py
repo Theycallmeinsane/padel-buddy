@@ -235,3 +235,59 @@ def test_worker_starts_before_the_api_has_created_anything(tmp_path, monkeypatch
     with pytest.raises(SystemExit):
         worker.main(settings)
     assert calls and (tmp_path / "fresh" / "data" / "padel.db").exists()
+
+
+def test_serves_the_web_app_next_to_the_api(tmp_path):
+    web = tmp_path / "out"
+    (web / "match").mkdir(parents=True)
+    (web / "index.html").write_text("<h1>Matches</h1>")
+    (web / "match" / "index.html").write_text("<h1>Match</h1>")
+    c = TestClient(create_app(Settings(data_dir=tmp_path / "d", web_dir=web)))
+    assert "Matches" in c.get("/").text
+    assert "Match" in c.get("/match/", params={"id": "abc"}).text
+    assert c.get("/health").json()["ok"] is True  # API routes still win
+    assert c.get("/matches").json() == []
+
+
+def test_import_a_video_already_on_disk(settings, tmp_path):
+    from padel_api.main import import_video
+
+    src = make_video(tmp_path / "IMG_0257.MOV")
+    match = import_video(settings, src)
+    assert match.status == "uploaded" and match.title == "IMG_0257"
+    assert match.duration_s == pytest.approx(3.0, abs=0.2)
+    stored = LocalStorage(settings.data_dir).video_path(match.id, ".mov")
+    assert stored.read_bytes() == src.read_bytes()
+    c = TestClient(create_app(settings))
+    assert [m["id"] for m in c.get("/matches").json()] == [match.id]
+    c.delete(f"/matches/{match.id}")
+    assert src.exists()  # deleting the match never touches the original
+    with pytest.raises(ValueError):
+        import_video(settings, tmp_path / "notes.txt")
+
+
+def test_worker_loop_stops_when_asked(settings, tmp_path, monkeypatch):
+    import threading
+
+    stop = threading.Event()
+    seen = []
+
+    def fake_run_once(db, storage, name, runner=None):
+        seen.append(name)
+        stop.set()
+        return False
+
+    monkeypatch.setattr(worker, "run_once", fake_run_once)
+    t = threading.Thread(target=worker.run_forever, args=(settings, stop))
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive() and len(seen) == 1
+
+
+def test_padel_buddy_import_command_queues_analysis(settings, tmp_path, capsys):
+    from padel_api import local
+
+    local.main(["import", str(make_video(tmp_path / "match.mp4")), "--title", "Sunday", "--analyze"], settings)
+    assert "Added 'Sunday'" in capsys.readouterr().out
+    (m,) = TestClient(create_app(settings)).get("/matches").json()
+    assert m["status"] == "queued" and m["job"]["status"] == "queued"
