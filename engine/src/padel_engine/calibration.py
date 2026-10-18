@@ -98,6 +98,18 @@ class Calibration:
         """Map Nx2 court metres to Nx2 pixel coordinates."""
         return _apply(self.H_inv, np.asarray(pts, dtype=np.float64).reshape(-1, 2))
 
+    def in_front(self, pts: np.ndarray) -> np.ndarray:
+        """True for court points in front of the camera.
+
+        A phone on the back glass often has the near wall under or behind it.
+        Such points still "project" through the homography, but to mirrored,
+        meaningless pixels, so drawings must leave them out.
+        """
+        pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+        depth = np.column_stack([pts, np.ones(len(pts))]) @ self.H_inv[2]
+        seen = court.KEYPOINTS[next(iter(self.points))]  # a clicked point is always in view
+        return depth * (np.array([*seen, 1.0]) @ self.H_inv[2]) > 0
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict:
