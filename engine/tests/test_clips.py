@@ -91,7 +91,7 @@ def test_window_covers_a_long_rally():
 def test_long_match_keeps_only_the_best_moments():
     # An hour of play where every rally has a shot well above the typical
     # level, as in real matches: only ~8 per hour should become clips.
-    cfg = ClipsConfig(moments_per_hour=8)
+    cfg = ClipsConfig(clips_per_hour=8)
     t = np.arange(0, 3600, 0.01)
     excess = np.zeros_like(t)
     rallies = []
@@ -106,6 +106,29 @@ def test_long_match_keeps_only_the_best_moments():
     assert [m.time for m in moments] == sorted(m.time for m in moments)
     per_rally_best = sorted((max(excess[int((r.start + 2) / 0.01)], excess[int((r.start + 10) / 0.01)]) for r in rallies), reverse=True)
     assert sorted((m.excess_db for m in moments), reverse=True) == pytest.approx(per_rally_best[:8])
+
+
+def test_rally_score_ignores_loudness():
+    # Same length and shot count; one has a glass bang right next to the phone.
+    rallies = [events.Rally(0, 10, 20, 10, 2.0), events.Rally(1, 40, 50, 10, 18.0), events.Rally(2, 70, 75, 5, 0.0)]
+    events._score_rallies(rallies)
+    assert rallies[0].score == rallies[1].score > rallies[2].score
+
+
+def test_point_windows_take_the_best_points_whole():
+    cfg = ClipsConfig(clips_per_hour=1, min_clips=3, point_lead_s=5, point_tail_s=3)
+    rallies = [
+        events.Rally(0, 100, 110, 8, 0, score=0.9),
+        events.Rally(1, 114, 140, 20, 0, score=1.0),  # starts 4 s after the last: the clips join
+        events.Rally(2, 300, 304, 4, 0, score=0.1),  # weak point, not picked
+        events.Rally(3, 500, 530, 25, 0, score=0.8),
+    ]
+    w = events.point_windows(rallies, 600, cfg)
+    assert [(x.start, x.end, x.rallies) for x in w] == [(95, 143, [0, 1]), (495, 533, [3])]
+    assert w[0].peak_time == 127  # middle of the better point
+    assert [s.rallies for s in events.condensed_segments(rallies, 600, ClipsConfig(condensed_pad_s=2))] == [
+        [0, 1], [2], [3]
+    ]
 
 
 def test_quiet_match_falls_back_to_best_rallies():
@@ -128,19 +151,39 @@ def test_end_to_end_clips(tmp_path, monkeypatch):
 
     run = tmp_path / "run"
     assert len(summary.rallies) == 3
-    assert len(summary.clips) == 1
-    clip = summary.clips[0]
-    assert (run / clip.file).exists() and (run / clip.thumbnail).exists()
-    # 30 s before the smash, cut short at the end of the video.
-    assert clip.start_s == pytest.approx(clip.peak_s - 30, abs=0.01)
-    assert clip.end_s == pytest.approx(script.duration, abs=0.1)
-    assert abs(probe_duration(run / clip.file) - (clip.end_s - clip.start_s)) < 0.5
+    # A short video still gets min_clips (3) points: here, every rally, whole.
+    assert [c.rallies for c in summary.clips] == [[0], [1], [2]]
+    for clip, rally in zip(summary.clips, summary.rallies):
+        assert (run / clip.file).exists() and (run / clip.thumbnail).exists()
+        assert clip.start_s == pytest.approx(max(0, rally.start_s - 5), abs=0.01)
+        assert clip.end_s == pytest.approx(min(script.duration, rally.end_s + 3), abs=0.1)
+        assert abs(probe_duration(run / clip.file) - (clip.end_s - clip.start_s)) < 0.5
     assert summary.highlights == "highlights.mp4"
     reel_len = sum(b - a for a, b in summary.highlight_segments)
     assert abs(probe_duration(run / "highlights.mp4") - reel_len) < 1.0
+    # Condensed match: every point with 2 s either side, shrunk to 720p at most.
+    assert summary.condensed == "condensed.mp4"
+    expected = sum(min(script.duration, r.end_s + 2) - max(0, r.start_s - 2) for r in summary.rallies)
+    assert summary.condensed_s == pytest.approx(expected, abs=0.2)
+    assert abs(probe_duration(run / "condensed.mp4") - expected) < 1.0
     data = json.loads((run / "clips.json").read_text())
     assert data["clips"][0]["file"] == "clips/clip_001.mp4"
     assert (run / "hits.csv").read_text().startswith("time_s,strength")
+
+
+@needs_ffmpeg
+def test_moments_mode_cuts_around_the_smash(tmp_path):
+    from padel_engine.clips import run_clips
+
+    script = default_script()
+    video = make_video(tmp_path / "match.mp4", script)
+    cfg = EngineConfig.model_validate({"clips": {"clip_mode": "moments", "condensed": False}})
+    summary = run_clips(video, tmp_path / "run", cfg)
+    (clip,) = summary.clips
+    # 30 s before the smash, cut short at the end of the video.
+    assert clip.start_s == pytest.approx(clip.peak_s - 30, abs=0.01)
+    assert clip.end_s == pytest.approx(script.duration, abs=0.1)
+    assert summary.condensed is None
 
 
 @needs_ffmpeg
