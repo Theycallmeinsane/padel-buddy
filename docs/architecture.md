@@ -34,6 +34,10 @@ them one by one.
 | `audio` | Streams audio through FFmpeg; ball-hit onsets and loudness |
 | `events` | Rallies, intense moments, clip windows and the highlight selection |
 | `clips` | `run_clips(...)`: cuts clips, thumbnails and the highlight reel with FFmpeg |
+| `ball` | `run_ball(...)`: ball candidates from motion, flights and bounces during points |
+| `shots` | `run_shots(...)`: who hit each shot and its kind, and how each point ended |
+| `report` | `run_report(...)`: team and player numbers, tips, each player's moments and reel |
+| `coach` | Optional written summary of the report's numbers from the Claude API |
 | `schemas` | Pydantic output models, the contract the API will serve |
 
 Design choices:
@@ -62,8 +66,9 @@ in [api/README.md](../api/README.md).
 ## Web app (`web/`)
 
 A static Next.js export: upload with pause and resume, in-browser court
-calibration, progress, the highlight reel, clip gallery, player table and
-heatmaps. Being static, the same build can be wrapped as the Android app
+calibration, progress, the match viewer, the match report, each player's
+highlights, a page per player across matches, the highlight reel, clip
+gallery, player table and heatmaps. Being static, the same build can be wrapped as the Android app
 (Capacitor) and the desktop app (Tauri) later without a server of its own.
 
 ## Roadmap
@@ -75,8 +80,12 @@ heatmaps. Being static, the same build can be wrapped as the Android app
    and a reel of the best rallies.
 3. **API and web app.** Built. Next for this step: object storage for a
    cloud deployment, and the Android and desktop shells.
-4. **Shots and mistakes.** Ball tracking, pose, shot classification, error
-   detection and a written match report built on the tracking data.
+4. **Shots and mistakes.** Built: ball tracking and bounces, who hit each
+   shot and its kind, how each point ended (winner, net, out), a match
+   report with tips and an optional coach's summary, and each player's own
+   highlights and numbers, followed across matches by name.
+5. **Pose.** Forehand and backhand, technique notes, and a trained ball
+   detector, once real footage is available to train and tune on.
 
 Automatic court-line detection (no clicking) is planned once real footage is
 available to tune it on.

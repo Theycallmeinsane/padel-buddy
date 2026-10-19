@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     stale_job_s: float = Field(600.0, gt=0, description="A running job silent this long is re-queued.")
     web_dir: Path | None = Field(
         None, description="A built web app (web/out) to serve at /, so one process gives the whole app."
+    )
+    anthropic_api_key: SecretStr | None = Field(
+        None,
+        validation_alias=AliasChoices("ANTHROPIC_API_KEY", "PADEL_ANTHROPIC_API_KEY"),
+        description="Claude API key for the written coaching summary in match reports. Optional.",
     )
 
     @property

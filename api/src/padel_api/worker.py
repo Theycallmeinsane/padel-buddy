@@ -8,6 +8,7 @@ Run one per GPU (or one on your laptop):
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import socket
 import threading
@@ -77,6 +78,9 @@ def run_once(db: Database, storage: LocalStorage, worker: str, runner: Runner = 
 def run_forever(settings: Settings, stop: threading.Event) -> None:
     """Poll for jobs until ``stop`` is set (checked between jobs)."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)  # the worker may start before the API
+    if settings.anthropic_api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+        # The engine reads the key from the environment; .env alone doesn't put it there.
+        os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key.get_secret_value()
     db = Database(settings.db_url)
     db.create_all()
     storage = LocalStorage(settings.data_dir)

@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Api, BallTrack, Bounce, Overlay, Rally, Results } from "@/lib/api";
+import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot } from "@/lib/api";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
 
 // Same colours as the engine's preview video: team A in blues, team B warm.
-const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
+export const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
+const TEAM_COLORS: Record<string, string> = { A: "#2d6fd6", B: "#e0702b" };
+const SHOT_LABEL_S = 1.0; // a shot's name shows over the hitter this long
 const BOX_GAP_S = 0.3; // hide a player when their nearest sample is further away than this
 const TRAIL_S = 2;
 const BALL_COLOR = "#f4ff3d";
@@ -21,7 +23,12 @@ const COURT_LINES: [number, number, number, number][] = [
   [5, 2.85, 5, 17.15],
 ];
 
-type Layers = { lines: boolean; players: boolean; ball: boolean; minimap: boolean };
+type Layers = { lines: boolean; players: boolean; ball: boolean; shots: boolean; minimap: boolean };
+type Marks = { shots: Shot[]; names: Record<string, string>; focus: string | null };
+const SHOT_NAMES: Record<string, string> = {
+  serve: "Serve", return: "Return", volley: "Volley", smash: "Smash", bandeja: "Bandeja", lob: "Lob",
+  groundstroke: "Groundstroke",
+};
 type Source = "points" | "full";
 
 export default function MatchViewer({
@@ -29,11 +36,17 @@ export default function MatchViewer({
   matchId,
   durationS,
   data,
+  names = {},
+  focus = null,
+  seekTo = null,
 }: {
   api: Api;
   matchId: string;
   durationS: number | null;
   data: Results;
+  names?: Record<string, string>;
+  focus?: string | null; // follow one player: the others are dimmed
+  seekTo?: { t: number; n: number } | null; // a request from outside to play from match time t
 }) {
   const clips = data.clips;
   const rallies = useMemo(() => clips?.rallies ?? [], [clips]);
@@ -42,13 +55,16 @@ export default function MatchViewer({
   const condensed = clips?.condensed && clips.condensed_segments?.length ? clips.condensed : null;
   const total = durationS || Math.max(1, ...rallies.map((r) => r.end_s));
   const best = useMemo(() => new Set(clips?.clips.flatMap((c) => c.rallies ?? []) ?? []), [clips]);
+  const shots = useMemo(() => data.shots?.shots ?? [], [data.shots]);
+  const endings = useMemo(() => new Map((data.shots?.points ?? []).map((p) => [p.rally, p])), [data.shots]);
+  const marks = useMemo<Marks>(() => ({ shots, names, focus }), [shots, names, focus]);
 
   const [source, setSource] = useState<Source>(condensed ? "points" : "full");
   const [fullFailed, setFullFailed] = useState(false);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [overlayError, setOverlayError] = useState<string | null>(null);
   const [ball, setBall] = useState<BallTrack | null>(null);
-  const [layers, setLayers] = useState<Layers>({ lines: true, players: true, ball: true, minimap: true });
+  const [layers, setLayers] = useState<Layers>({ lines: true, players: true, ball: true, shots: true, minimap: true });
   const [matchTime, setMatchTime] = useState(0);
   const narrow = useMediaQuery("(max-width: 720px)");
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -99,11 +115,11 @@ export default function MatchViewer({
         shown = t;
         setMatchTime(t);
       }
-      paint(canvas, video, overlay, ball, layers, t);
+      paint(canvas, video, overlay, ball, layers, t, marks);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [overlay, ball, layers, segments]);
+  }, [overlay, ball, layers, segments, marks]);
 
   const seek = useCallback(
     (t: number) => {
@@ -116,12 +132,19 @@ export default function MatchViewer({
     [segments],
   );
 
+  useEffect(() => {
+    if (!seekTo) return;
+    seek(seekTo.t);
+    videoRef.current?.closest("section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [seekTo, seek]);
+
   function switchTo(next: Source) {
     resumeAt.current = matchTime;
     setSource(next);
   }
 
   const point = rallies.find((r) => r.start_s - 2 <= matchTime && matchTime <= r.end_s + 2);
+  const ending = point ? endings.get(point.index) : undefined;
   const src = source === "points" && condensed ? api.fileUrl(matchId, condensed) : api.videoUrl(matchId);
 
   return (
@@ -173,7 +196,7 @@ export default function MatchViewer({
         <span className="grow muted">
           {formatTime(matchTime)}
           {point
-            ? ` · point ${point.index + 1} of ${rallies.length} · ${point.hits} shots${best.has(point.index) ? " · one of the best" : ""}`
+            ? ` · point ${point.index + 1} of ${rallies.length} · ${point.hits} shots${best.has(point.index) ? " · one of the best" : ""}${ending ? endingText(ending, names) : ""}`
             : ""}
         </span>
         {overlay &&
@@ -182,6 +205,7 @@ export default function MatchViewer({
               ["lines", "Court lines"],
               ["players", "Players"],
               ...(ball ? ([["ball", "Ball"]] as const) : []),
+              ...(shots.length ? ([["shots", "Shots"]] as const) : []),
               ["minimap", "Minimap"],
             ] as const
           ).map(([key, label]) => (
@@ -196,7 +220,9 @@ export default function MatchViewer({
           ))}
       </div>
 
-      {rallies.length > 0 && <Timeline rallies={rallies} best={best} total={total} t={matchTime} onSeek={seek} />}
+      {rallies.length > 0 && (
+        <Timeline rallies={rallies} best={best} endings={endings} total={total} t={matchTime} onSeek={seek} />
+      )}
 
       {fullFailed && (
         <p className="muted small">
@@ -218,6 +244,13 @@ export default function MatchViewer({
   );
 }
 
+function endingText(p: PointEnding, names: Record<string, string>): string {
+  if (p.ending === "unknown" || !p.won_by) return "";
+  const who = p.last_player ? names[p.last_player] ?? p.last_player : `team ${p.last_team}`;
+  if (p.ending === "winner") return ` · won by team ${p.won_by}: winner by ${who}`;
+  return ` · won by team ${p.won_by}: ${who} hit ${p.detail === "net" ? "the net" : "it out"}`;
+}
+
 function paint(
   canvas: HTMLCanvasElement,
   video: HTMLVideoElement,
@@ -225,6 +258,7 @@ function paint(
   ball: BallTrack | null,
   layers: Layers,
   t: number,
+  marks: Marks,
 ) {
   const dpr = window.devicePixelRatio || 1;
   const w = video.clientWidth;
@@ -262,14 +296,27 @@ function paint(
     ctx.lineWidth = 2 * px;
     ctx.font = `600 ${13 * px}px system-ui, sans-serif`;
     ctx.textBaseline = "bottom";
+    // The shot each player just played, named over their box for a moment.
+    const played = new Map<string, Shot>();
+    if (layers.shots) {
+      for (let k = lowerBoundBy(marks.shots, t - SHOT_LABEL_S); k < marks.shots.length && marks.shots[k].time_s <= t; k++) {
+        const shot = marks.shots[k];
+        if (shot.player && SHOT_NAMES[shot.kind]) played.set(shot.player, shot);
+      }
+    }
     for (const [pid, p] of Object.entries(overlay.players)) {
       const i = nearest(p.t, t, BOX_GAP_S);
       if (i < 0) continue;
       const [x1, y1, x2, y2] = p.box.slice(4 * i, 4 * i + 4);
+      const focused = marks.focus === pid;
+      ctx.globalAlpha = marks.focus && !focused ? 0.35 : 1;
+      ctx.lineWidth = (focused ? 3.5 : 2) * px;
       ctx.strokeStyle = ctx.fillStyle = PLAYER_COLORS[pid] ?? "#ffffff";
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-      ctx.fillText(pid, x1, y1 - 3 * px);
+      const shot = played.get(pid);
+      ctx.fillText(`${marks.names[pid] ?? pid}${shot ? ` · ${SHOT_NAMES[shot.kind]}` : ""}`, x1, y1 - 3 * px);
     }
+    ctx.globalAlpha = 1;
   }
   if (ball && layers.ball) paintBall(ctx, ball, t, px);
 }
@@ -306,6 +353,18 @@ function paintBall(ctx: CanvasRenderingContext2D, ball: BallTrack, t: number, px
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+}
+
+/** First shot at or after `t` (shots are sorted by time). */
+function lowerBoundBy(shots: Shot[], t: number): number {
+  let lo = 0;
+  let hi = shots.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (shots[mid].time_s < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /** Bounces from the last `within` seconds up to `t` (bounces are sorted by time). */
@@ -397,12 +456,14 @@ function useMediaQuery(query: string): boolean {
 function Timeline({
   rallies,
   best,
+  endings,
   total,
   t,
   onSeek,
 }: {
   rallies: Rally[];
   best: Set<number>;
+  endings: Map<number, PointEnding>;
   total: number;
   t: number;
   onSeek: (t: number) => void;
@@ -426,8 +487,11 @@ function Timeline({
             left: pct(r.start_s),
             width: pct(Math.max(r.end_s - r.start_s, total * 0.003)),
             opacity: 0.35 + 0.65 * r.score,
+            borderBottom: endings.get(r.index)?.won_by ? `3px solid ${TEAM_COLORS[endings.get(r.index)!.won_by!]}` : undefined,
           }}
-          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${r.hits} shots, ${Math.round(r.end_s - r.start_s)} s`}
+          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
+            endings.get(r.index)?.won_by ? `, won by team ${endings.get(r.index)!.won_by}` : ""
+          }`}
           aria-label={`Play point ${r.index + 1} at ${formatTime(r.start_s)}`}
           onClick={(e) => {
             e.stopPropagation();

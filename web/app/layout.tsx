@@ -27,6 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" className="brand">🎾 Padel Buddy</Link>
             <nav>
               <Link href="/">Matches</Link>
+              <Link href="/players/">Players</Link>
               <Link href="/settings/">Settings</Link>
             </nav>
           </header>

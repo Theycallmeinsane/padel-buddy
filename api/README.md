@@ -47,7 +47,12 @@ git-ignored. Settings come from environment variables or `.env`; see
 | `PUT` | `/matches/{id}/calibration` | Clicked court points; enables player tracking |
 | `POST` | `/matches/{id}/analyze` | Queue analysis, optionally with engine setting overrides |
 | `GET` | `/matches/{id}` | Status and job progress |
-| `GET` | `/matches/{id}/results` | Tracking and clips summaries (`summary.json`, `clips.json`) |
+| `GET` | `/matches/{id}/results` | Every summary at once: tracking, clips, ball, shots and the match report |
+| `GET` | `/matches/{id}/report.md` | The match report as Markdown, with the players' names |
+| `PUT` | `/matches/{id}/players` | Name the players: `{"names": {"P1": "Maya", "P3": "Sara"}}`; an empty name clears one |
+| `GET` | `/matches/{id}/players/{P1-P4}` | One player in one match: their numbers, shots, best moments and own highlight reel |
+| `GET` | `/people` | Everyone named in any match, with how many matches each |
+| `GET` | `/people/{name}` | One person across all their matches, newest first (name match ignores case) |
 | `GET` | `/matches/{id}/files/{path}` | Any output: clips, reel, thumbnails, heatmaps, preview (supports Range for video seeking) |
 | `GET` | `/matches/{id}/video` | The original upload |
 | `GET` | `/court/keypoints` | Names and positions of the calibration points |
@@ -69,6 +74,12 @@ git-ignored. Settings come from environment variables or `.env`; see
 - **Storage behind one class.** `storage.LocalStorage` decides where a
   match's files live. A cloud deployment either shares one disk between
   API and workers or swaps in an object-storage version of that class.
+- **People are names.** A match stores which name played as P1-P4, so the
+  same name in several matches is one person. No accounts needed; when
+  accounts arrive, a name can be linked to one.
+- **Claude key stays on the server.** Put `ANTHROPIC_API_KEY` in `.env` for
+  the written coach's summary; the worker passes it to the engine and it
+  never reaches the browser. Without it, reports just skip the summary.
 - **Auth.** For personal use, set `PADEL_API_TOKEN` and send it as a Bearer
   token (or `?token=` on media links). Per-user accounts come with the
   multi-user product.

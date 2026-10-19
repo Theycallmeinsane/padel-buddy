@@ -237,18 +237,21 @@ def run_match(
 
     Tracking runs first when a calibration is given, so clips can also use
     player movement to rank rallies; the ball is then tracked during the
-    points the clips step found. Without a calibration only clips and
-    highlights are produced.
+    points the clips step found, and shots, point endings and the match
+    report (with each player's highlights) are built from all of it.
+    Without a calibration only clips and highlights are produced.
     """
     from .ball import run_ball
     from .clips import run_clips
+    from .report import run_report
+    from .shots import run_shots
 
     cfg = config or EngineConfig()
     report = on_progress or (lambda p: None)
     result: dict[str, object] = {}
     tracks = None
-    # Share of the progress bar: tracking, then clips, then the ball.
-    stages = (0.5, 0.7) if calibration is not None else (0.0, 1.0)
+    # Share of the progress bar: tracking, clips, the ball, then shots and the report.
+    stages = (0.5, 0.7, 0.92) if calibration is not None else (0.0, 1.0, 1.0)
     if calibration is not None:
         result["tracking"] = run_tracking(
             video_path, calibration, out_dir, cfg, tracker=tracker, on_progress=lambda p: report(stages[0] * p)
@@ -262,7 +265,13 @@ def run_match(
     if calibration is not None and cfg.ball.enabled and clips.rallies:
         result["ball"] = run_ball(
             video_path, calibration, out_dir, [(r.start_s, r.end_s) for r in clips.rallies], tracks, cfg,
-            on_progress=lambda p: report(stages[1] + (1 - stages[1]) * p),
+            on_progress=lambda p: report(stages[1] + (stages[2] - stages[1]) * p),
         )
+    if calibration is not None and cfg.shots.enabled and clips.rallies:
+        result["shots"] = run_shots(out_dir, cfg)
+        if cfg.report.enabled:
+            result["report"] = run_report(
+                out_dir, video_path, cfg, on_progress=lambda p: report(stages[2] + (1 - stages[2]) * p)
+            )
     report(1.0)
     return result

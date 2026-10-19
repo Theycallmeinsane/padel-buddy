@@ -8,8 +8,13 @@ Flow for one match:
     PUT  /matches/{id}/calibration        the clicked points (optional: enables tracking)
     POST /matches/{id}/analyze            queue the engine
     GET  /matches/{id}                    status and progress
-    GET  /matches/{id}/results            tracking, clips and ball summaries
+    GET  /matches/{id}/results            tracking, clips, ball, shots and report
     GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, overlay data
+    PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
+    GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
+    GET  /matches/{id}/report.md          the match report, with names
+    GET  /people                          everyone named in any match
+    GET  /people/{name}                   one person across all their matches
 
 Run with ``padel-api`` (or ``uvicorn padel_api.main:create_app --factory``).
 ``padel-buddy`` (see ``local.py``) runs the API, a worker and the web app in
@@ -35,12 +40,14 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, MatchCreate, MatchOut, UploadStatus,
+    AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, MatchCreate, MatchOut, PersonOut, PlayerNamesIn,
+    PlayerOut, UploadStatus,
 )
 from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
 
 _RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
+PLAYER_IDS = ("P1", "P2", "P3", "P4")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -257,10 +264,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def results(match: Match = Depends(load_match)) -> dict:
         run = storage.run_dir(match.id)
         out = {}
-        for key, name in (("tracking", "summary.json"), ("clips", "clips.json"), ("ball", "ball.json")):
+        for key, name in (
+            ("tracking", "summary.json"), ("clips", "clips.json"), ("ball", "ball.json"),
+            ("shots", "shots.json"), ("report", "report.json"),
+        ):
             f = run / name
             out[key] = json.loads(f.read_text()) if f.exists() else None
         return out
+
+    # -- players and people -------------------------------------------------
+
+    @app.put("/matches/{match_id}/players", dependencies=auth)
+    def name_players(
+        body: PlayerNamesIn, match: Match = Depends(load_match), session: Session = Depends(get_session)
+    ) -> MatchOut:
+        unknown = set(body.names) - set(PLAYER_IDS)
+        if unknown:
+            raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}; got {', '.join(sorted(unknown))}")
+        match = session.merge(match)
+        names = dict(match.player_names or {})
+        for pid, name in body.names.items():
+            name = " ".join(name.split())[:60]
+            if name:
+                names[pid] = name
+            else:
+                names.pop(pid, None)
+        match.player_names = names or None
+        session.commit()
+        return _match_out(match)
+
+    @app.get("/matches/{match_id}/players/{player}", dependencies=auth)
+    def player(player: str, match: Match = Depends(load_match)) -> PlayerOut:
+        if player not in PLAYER_IDS:
+            raise HTTPException(404, f"Players are {', '.join(PLAYER_IDS)}")
+        return _player_out(match, player, storage.run_dir(match.id))
+
+    @app.get("/matches/{match_id}/report.md", dependencies=auth)
+    def report_markdown(match: Match = Depends(load_match)) -> Response:
+        from padel_engine.report import to_markdown
+        from padel_engine.schemas import MatchReport
+
+        f = storage.run_dir(match.id) / "report.json"
+        if not f.exists():
+            raise HTTPException(404, "No report yet: analyse the match with a calibration")
+        report = MatchReport.model_validate_json(f.read_text())
+        return Response(to_markdown(report, match.player_names or {}), media_type="text/markdown; charset=utf-8")
+
+    @app.get("/people", dependencies=auth)
+    def people(session: Session = Depends(get_session)) -> list[PersonOut]:
+        counts: dict[str, list] = {}
+        for match in session.scalars(select(Match)):
+            for name in (match.player_names or {}).values():
+                entry = counts.setdefault(name.casefold(), [name, 0])
+                entry[1] += 1
+        return [PersonOut(name=n, matches=c) for n, c in sorted(counts.values(), key=lambda e: e[0].casefold())]
+
+    @app.get("/people/{name}", dependencies=auth)
+    def person(name: str, session: Session = Depends(get_session)) -> list[PlayerOut]:
+        """Everything about one person: each match they were named in, newest first."""
+        key = " ".join(name.split()).casefold()
+        found = []
+        for match in session.scalars(select(Match).order_by(Match.created_at.desc())):
+            for pid, given in sorted((match.player_names or {}).items()):
+                if given.casefold() == key:
+                    found.append(_player_out(match, pid, storage.run_dir(match.id)))
+        if not found:
+            raise HTTPException(404, f"Nobody called {name!r} in any match")
+        return found
 
     @app.get("/matches/{match_id}/files/{rel:path}", dependencies=auth)
     def run_file(rel: str, request: Request, match: Match = Depends(load_match)) -> Response:
@@ -360,8 +430,25 @@ def _match_out(match: Match) -> MatchOut:
     return MatchOut(
         id=match.id, title=match.title, created_at=match.created_at, status=match.status,
         video_size=match.video_size, video_received=match.video_received, duration_s=match.duration_s,
-        calibrated=match.calibration is not None, error=match.error,
+        calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
         job=_job_out(latest) if latest else None,
+    )
+
+
+def _player_out(match: Match, player: str, run: Path) -> PlayerOut:
+    report = json.loads((run / "report.json").read_text()) if (run / "report.json").exists() else None
+    shots = json.loads((run / "shots.json").read_text())["shots"] if (run / "shots.json").exists() else []
+    mine = next((p for p in (report or {}).get("players", []) if p["player"] == player), None)
+    return PlayerOut(
+        match_id=match.id,
+        match_title=match.title,
+        match_date=match.created_at,
+        player=player,
+        name=(match.player_names or {}).get(player),
+        team=mine["team"] if mine else None,
+        report=mine,
+        shots=[s for s in shots if s["player"] == player],
+        reel=mine.get("reel") if mine else None,
     )
 
 
