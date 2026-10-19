@@ -50,9 +50,14 @@ HEVC often doesn't), so points-only is the default.
   The **match report** below the viewer has the team and player tables,
   tips and, if a Claude key is set on the server, a coach's summary; it
   downloads as Markdown. **Name the players** there once per match. **Player
-  highlights** picks one player: their numbers, shots by kind, their own
-  highlight reel and a list of their best moments; clicking a moment plays
-  it in the viewer, which then dims everyone else.
+  highlights** picks one player: their numbers, their own highlight reel or
+  (switch to **Winners**) every point they finished with a winner, a list of
+  those moments (clicking one plays it in the viewer, which then dims
+  everyone else), a table of each kind of shot with how often it stayed in
+  play and a strong / solid / weak rating, and their vertical short.
+  **Shorts** shows the best points as vertical clips for phones, and **Every
+  point** lists all the points with how each ended, to play in the viewer or
+  download as a clip of its own.
 - **Players** (`/players/`): everyone named in a match. Each name opens
   their page (`/players/?name=…`) with totals and their card from every match.
 - **Settings** (`/settings/`): API address and optional token.
