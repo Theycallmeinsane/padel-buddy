@@ -39,3 +39,47 @@ class TrackingSummary(BaseModel):
     analysed_frames: int
     players: list[PlayerStats]
     outputs: dict[str, str]  # name -> relative path inside the run folder
+
+
+class RallyInfo(BaseModel):
+    index: int
+    start_s: float
+    end_s: float
+    hits: int
+    peak_excess_db: float  # loudest instant, dB above the match's typical shot
+    movement_mps: float | None  # mean player speed, when tracking ran first
+    score: float  # 0..1 within this match
+
+
+class MomentInfo(BaseModel):
+    time_s: float
+    excess_db: float  # dB above the match's typical shot
+    rally: int | None
+    score: float
+
+
+class ClipInfo(BaseModel):
+    index: int
+    file: str  # relative path inside the run folder
+    start_s: float
+    end_s: float
+    peak_s: float  # middle of the best point, or the most intense moment
+    moments: list[int]
+    score: float
+    thumbnail: str | None = None
+    rallies: list[int] = []  # the points in the clip (clip_mode="points")
+
+
+class ClipsSummary(BaseModel):
+    engine_version: str
+    video: VideoMeta
+    hits: int
+    play_level_db: float  # typical shot loudness, the reference for "intense"
+    rallies: list[RallyInfo]
+    moments: list[MomentInfo]
+    clips: list[ClipInfo]
+    highlights: str | None  # relative path of the highlight reel, if any rally was found
+    highlight_segments: list[tuple[float, float]]
+    condensed: str | None = None  # every point back to back
+    condensed_s: float | None = None
+    outputs: dict[str, str]

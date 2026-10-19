@@ -3,7 +3,10 @@
 The video engine behind Padel Buddy. It runs the same way from the command
 line, from the API workers, and inside any future desktop app.
 
-Current scope (step 1): **court mapping and player tracking**.
+Current scope:
+
+- **Step 1: court mapping and player tracking** (needs a calibration)
+- **Step 2: rallies, clips and highlights** (from the sound; works without calibration)
 
 ## Install
 
@@ -24,7 +27,16 @@ padel-engine calibrate match.mp4 --out calibration.json
 
 # Track the four players.
 padel-engine track match.mp4 -c calibration.json --out runs/match1 --device cuda:0
+
+# Clips and highlights from the sound (add --tracks runs/match1/tracks.csv to use movement too).
+padel-engine clips match.mp4 --out runs/match1
+
+# Or everything in one go (tracking only if -c is given).
+padel-engine analyze match.mp4 -c calibration.json --out runs/match1
 ```
+
+FFmpeg must be installed for clips (`brew install ffmpeg`, `apt install ffmpeg`,
+or `winget install ffmpeg`).
 
 `calibrate` shows the frame beside a court diagram and asks for one keypoint
 at a time. Click it, or press Enter to skip a point that is hidden or out of
@@ -47,6 +59,11 @@ Each run folder contains:
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | The video with player boxes and a live top-down minimap |
+| `hits.csv` | Every detected ball hit: time and strength |
+| `clips.json` | Rallies (points), intense moments and clips with their times and scores |
+| `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |
+| `highlights.mp4` | The best rallies, cut tight (3 s either side) and joined in match order |
+| `condensed.mp4` | Every point back to back with the dead time between points cut, at 720p |
 
 Players are numbered by where they stand when first seen: **P1** near-left
 and **P2** near-right (team A, camera side at the start), **P3** far-left
@@ -72,9 +89,31 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones
    and heatmaps.
+5. **Hits** are sharp "pops" in the 1.5 to 8 kHz band, found as spectral-flux
+   peaks above a threshold that adapts to the local noise. Voices and
+   footsteps sit lower in frequency and are ignored. Audio is analysed a
+   minute at a time, so a two-hour match takes seconds and little memory.
+6. **Rallies** are runs of at least 4 hits with no gap longer than 3.5 s;
+   each one is a point. Each rally is scored against the others in the
+   match on length, number of shots and (if tracking ran) how hard the
+   players moved. Loudness is left out on purpose: a phone behind one glass
+   hears balls hitting that glass far louder than anything else, so loud
+   means "near the camera", not "good point".
+7. **Clips** are the best points, whole: the top 8 per hour of video (at
+   least 3), each from 5 s before the serve to 3 s after the last shot, so
+   the build-up and the finish are both in. Points close enough to overlap
+   share a clip.
+8. **Highlight reel**: the 10 best rallies, cut tight and joined.
+9. **Condensed match**: every rally with 2 s either side, joined, so the
+   whole match plays without the walking, ball fetching and towel breaks.
+10. **Intense moments** (`--mode moments`, the old rule) are sounds at least
+   6 dB louder than the match's typical shot, during a rally or within 4 s
+   after it. Each rally keeps its loudest, the top 8 per hour are kept, and
+   clips run from 30 s before to 30 s after each one, widened so a rally is
+   never cut mid-point. They are still listed in `clips.json` in points mode.
 
-Settings live in `padel_engine/config.py`; pass a JSON file of overrides with
-`--config`.
+Settings live in `padel_engine/config.py` (the `audio` and `clips` sections
+cover all of the above); pass a JSON file of overrides with `--config`.
 
 ## Tests
 
@@ -82,8 +121,8 @@ Settings live in `padel_engine/config.py`; pass a JSON file of overrides with
 pytest
 ```
 
-The tests use a synthetic camera and scripted players, so they need neither
-a GPU nor real footage.
+The tests use a synthetic camera, scripted players and synthetic match audio,
+so they need neither a GPU nor real footage. Clip tests need FFmpeg.
 
 ## Known limits (to tune with real footage)
 
@@ -95,3 +134,8 @@ a GPU nor real footage.
   Teammates in identical kit can swap ids at that moment.
 - Calibration is manual for now; automatic court-line detection comes once
   we have sample footage to tune it on.
+- Hits from a neighbouring court sound the same as ours. Rallies there can
+  show up as rallies here; player movement (from tracking) and, later, ball
+  tracking will filter them.
+- Hit sensitivity and the "intense" bar are tuned on synthetic audio and
+  need checking against real recordings and phone microphones.

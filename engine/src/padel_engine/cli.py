@@ -1,4 +1,4 @@
-"""Command line: ``padel-engine calibrate | check-calibration | track | keypoints``."""
+"""Command line: ``padel-engine calibrate | check-calibration | track | clips | analyze | keypoints``."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def track(
     """Find and follow the four players; write tracks, stats, heatmaps and a preview."""
     from .pipeline import run_tracking
 
-    cfg = EngineConfig.model_validate_json(config.read_text()) if config else EngineConfig()
+    cfg = _load_config(config)
     if fps is not None:
         cfg.tracking.process_fps = fps
     if model is not None:
@@ -79,7 +79,70 @@ def track(
         cfg.detector.device = device
     cfg.output.preview_video = preview
 
-    with typer.progressbar(length=100, label="Tracking") as bar:
+    calib = Calibration.load(calibration)
+    summary = _with_progress("Tracking", lambda cb: run_tracking(video, calib, out, cfg, on_progress=cb))
+    _print_tracking(summary, out)
+
+
+@app.command()
+def clips(
+    video: Path = typer.Argument(..., exists=True, dir_okay=False),
+    out: Path = typer.Option(Path("runs/latest"), help="Run folder for all outputs."),
+    tracks: Optional[Path] = typer.Option(
+        None, exists=True, help="tracks.csv from a tracking run, to rank rallies by movement too."
+    ),
+    mode: Optional[str] = typer.Option(None, help="points (default): best points, whole; moments: around loud sounds."),
+    pre: Optional[float] = typer.Option(None, help="moments mode: seconds before each moment (default 30)."),
+    post: Optional[float] = typer.Option(None, help="moments mode: seconds after each moment (default 30)."),
+    condensed: Optional[bool] = typer.Option(None, help="Also write the condensed match (default on)."),
+    config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+) -> None:
+    """Find the points from the sound; cut clips, a highlight reel and a condensed match."""
+    from .clips import run_clips
+
+    cfg = _load_config(config)
+    if mode is not None:
+        cfg.clips = type(cfg.clips).model_validate(cfg.clips.model_dump() | {"clip_mode": mode})
+    if condensed is not None:
+        cfg.clips.condensed = condensed
+    if pre is not None:
+        cfg.clips.pre_s = pre
+    if post is not None:
+        cfg.clips.post_s = post
+    summary = _with_progress("Clips", lambda cb: run_clips(video, out, cfg, tracks_csv=tracks, on_progress=cb))
+    _print_clips(summary, out)
+
+
+@app.command()
+def analyze(
+    video: Path = typer.Argument(..., exists=True, dir_okay=False),
+    calibration: Optional[Path] = typer.Option(
+        None, "--calibration", "-c", exists=True, dir_okay=False,
+        help="Court calibration. Without it, only clips and highlights are made.",
+    ),
+    out: Path = typer.Option(Path("runs/latest"), help="Run folder for all outputs."),
+    device: Optional[str] = typer.Option(None, help="cpu, cuda:0, mps"),
+    config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+) -> None:
+    """Tracking (if calibrated), then clips and highlights, into one run folder."""
+    from .pipeline import run_match
+
+    cfg = _load_config(config)
+    if device is not None:
+        cfg.detector.device = device
+    calib = Calibration.load(calibration) if calibration else None
+    result = _with_progress("Analysing", lambda cb: run_match(video, out, calib, cfg, on_progress=cb))
+    if "tracking" in result:
+        _print_tracking(result["tracking"], out)
+    _print_clips(result["clips"], out)
+
+
+def _load_config(path: Optional[Path]) -> EngineConfig:
+    return EngineConfig.model_validate_json(path.read_text()) if path else EngineConfig()
+
+
+def _with_progress(label: str, run):
+    with typer.progressbar(length=100, label=label) as bar:
         done = 0
 
         def progress(p: float) -> None:
@@ -89,14 +152,32 @@ def track(
                 bar.update(step)
                 done += step
 
-        summary = run_tracking(video, Calibration.load(calibration), out, cfg, on_progress=progress)
+        return run(progress)
 
-    typer.echo(f"\nResults in {out}/")
+
+def _print_tracking(summary, out: Path) -> None:
+    typer.echo(f"\nTracking results in {out}/")
     for p in summary.players:
         typer.echo(
             f"  {p.player} (team {p.team}): seen {p.seen_fraction:4.0%}  "
             f"{p.distance_m:6.0f} m  net {p.zone_share['net']:4.0%}  back {p.zone_share['back']:4.0%}"
         )
+
+
+def _print_clips(summary, out: Path) -> None:
+    typer.echo(
+        f"\n{summary.hits} hits, {len(summary.rallies)} rallies -> {len(summary.clips)} clips in {out}/clips/"
+    )
+    for c in summary.clips:
+        typer.echo(f"  {c.file}  {_mmss(c.start_s)}-{_mmss(c.end_s)}  ({c.end_s - c.start_s:.0f} s)")
+    if summary.highlights:
+        typer.echo(f"Highlight reel: {out}/{summary.highlights}")
+    if summary.condensed:
+        typer.echo(f"Condensed match ({_mmss(summary.condensed_s)}): {out}/{summary.condensed}")
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t // 60):02d}:{int(t % 60):02d}"
 
 
 if __name__ == "__main__":  # pragma: no cover

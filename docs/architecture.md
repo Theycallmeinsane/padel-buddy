@@ -30,7 +30,10 @@ them one by one.
 | `players` | Four stable player ids from noisy detections |
 | `analytics` | Kalman smoothing, distance, speed, zones, heatmaps |
 | `render` | Calibration overlay, annotated preview, top-down court |
-| `pipeline` | `run_tracking(video, calibration, out_dir)`: the single entry point |
+| `pipeline` | `run_tracking(...)`, and `run_match(...)`: tracking then clips, the single entry point |
+| `audio` | Streams audio through FFmpeg; ball-hit onsets and loudness |
+| `events` | Rallies, intense moments, clip windows and the highlight selection |
+| `clips` | `run_clips(...)`: cuts clips, thumbnails and the highlight reel with FFmpeg |
 | `schemas` | Pydantic output models, the contract the API will serve |
 
 Design choices:
@@ -51,10 +54,11 @@ Design choices:
 
 ## Roadmap
 
-1. **Court mapping and player tracking** (this step).
-2. **Clips and highlights.** Detect intense moments from ball-hit audio and
-   player movement, cut clips from 30 s before to 30 s after, merging
-   overlapping windows so a long rally is one clip, then rank highlights.
+1. **Court mapping and player tracking.** Built.
+2. **Clips and highlights.** Built: intense moments from ball-hit audio
+   (ranked with player movement when tracking ran), clips from 30 s before
+   to 30 s after, overlapping windows merged so a long rally is one clip,
+   and a reel of the best rallies.
 3. **API and web app.** FastAPI with background workers and resumable
    uploads; Supabase for Postgres and storage; a responsive Next.js app with
    in-browser calibration (click the court once per camera position).
