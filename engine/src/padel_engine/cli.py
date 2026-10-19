@@ -139,6 +139,27 @@ def ball(
 
 
 @app.command()
+def report(
+    out: Path = typer.Option(Path("runs/latest"), help="Run folder with clips, tracking and (ideally) ball outputs."),
+    video: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False, help="The match video, to cut each player's highlight reel."
+    ),
+    config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+) -> None:
+    """Shots, how each point ended, and the match report with each player's highlights."""
+    from .report import run_report
+    from .shots import run_shots
+
+    for needed in ("clips.json", "hits.csv", "overlay.json"):
+        if not (out / needed).exists():
+            raise typer.BadParameter(f"{out / needed} not found: run `padel-engine analyze` first", param_hint="--out")
+    cfg = _load_config(config)
+    run_shots(out, cfg)
+    result = _with_progress("Report", lambda cb: run_report(out, video, cfg, on_progress=cb))
+    _print_report(result, out)
+
+
+@app.command()
 def analyze(
     video: Path = typer.Argument(..., exists=True, dir_okay=False),
     calibration: Optional[Path] = typer.Option(
@@ -162,6 +183,8 @@ def analyze(
     _print_clips(result["clips"], out)
     if "ball" in result:
         _print_ball(result["ball"], out)
+    if "report" in result:
+        _print_report(result["report"], out)
 
 
 def _load_config(path: Optional[Path]) -> EngineConfig:
@@ -208,6 +231,18 @@ def _print_ball(summary, out: Path) -> None:
         f"\nBall seen in {summary.seen_fraction:.0%} of {summary.searched_s / 60:.0f} min of points: "
         f"{summary.flights} flights, {summary.bounces} bounces -> {out}/{summary.outputs['track']}"
     )
+
+
+def _print_report(report, out: Path) -> None:
+    typer.echo(
+        f"\n{report.points} points, {report.shots} shots; endings told for {report.points_with_ending}. "
+        f"Report: {out}/report.md"
+    )
+    for t in report.teams:
+        typer.echo(f"  Team {t.team} ({', '.join(t.players)}): won {t.points_won}, {t.winners} winners, {t.errors} errors")
+    for p in report.players:
+        reel = f"  reel {out}/{p.reel}" if p.reel else ""
+        typer.echo(f"  {p.player}: {p.shots} shots, {p.winners} winners, {p.errors} errors{reel}")
 
 
 def _mmss(t: float) -> str:

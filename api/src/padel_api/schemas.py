@@ -33,6 +33,7 @@ class MatchOut(BaseModel):
     duration_s: float | None
     calibrated: bool
     error: str | None
+    player_names: dict[str, str] = {}
     job: JobOut | None = None  # the latest analysis job
 
 
@@ -54,6 +55,31 @@ class CalibrationOut(BaseModel):
 
 class AnalyzeIn(BaseModel):
     config: dict | None = Field(None, description="EngineConfig overrides, e.g. {'clips': {'pre_s': 20}}")
+
+
+class PlayerNamesIn(BaseModel):
+    names: dict[str, str] = Field(
+        ..., description="Player id (P1-P4) -> name; an empty name clears it.", examples=[{"P1": "Maya"}]
+    )
+
+
+class PlayerOut(BaseModel):
+    """One player in one match: who they are, their numbers, highlights and reel."""
+
+    match_id: str
+    match_title: str
+    match_date: datetime
+    player: str
+    name: str | None
+    team: str | None
+    report: dict | None  # engine PlayerReport
+    shots: list[dict]  # engine ShotInfo, this player's only
+    reel: str | None  # path for /matches/{id}/files/
+
+
+class PersonOut(BaseModel):
+    name: str
+    matches: int
 
 
 class Keypoint(BaseModel):

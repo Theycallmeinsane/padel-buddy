@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Calibrator from "@/components/Calibrator";
 import MatchViewer from "@/components/MatchViewer";
+import Report from "@/components/Report";
 import Results from "@/components/Results";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
 import { Api, ApiError, type Match, type Results as ResultsData } from "@/lib/api";
@@ -29,6 +30,9 @@ function MatchView() {
   const [results, setResults] = useState<ResultsData | null>(null);
   const [calibrating, setCalibrating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focus, setFocus] = useState<string | null>(null);
+  const [seekTo, setSeekTo] = useState<{ t: number; n: number } | null>(null);
+  const names = useMemo(() => match?.player_names ?? {}, [match?.player_names]);
 
   const refresh = useCallback(async () => {
     try {
@@ -57,6 +61,14 @@ function MatchView() {
       await api.analyze(id);
       setResults(null);
       await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function saveNames(next: Record<string, string>) {
+    try {
+      setMatch(await api.namePlayers(id, next));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -150,7 +162,28 @@ function MatchView() {
       )}
 
       {results && (
-        <MatchViewer key={match.job?.id} api={api} matchId={id} durationS={match.duration_s} data={results} />
+        <MatchViewer
+          key={match.job?.id}
+          api={api}
+          matchId={id}
+          durationS={match.duration_s}
+          data={results}
+          names={names}
+          focus={focus}
+          seekTo={seekTo}
+        />
+      )}
+      {results?.report && (
+        <Report
+          api={api}
+          matchId={id}
+          report={results.report}
+          names={names}
+          onNames={saveNames}
+          focus={focus}
+          onFocus={setFocus}
+          onSeek={(t) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 }))}
+        />
       )}
       {results && <Results api={api} matchId={id} data={results} />}
 

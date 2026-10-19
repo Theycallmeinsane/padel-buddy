@@ -8,6 +8,8 @@ Current scope:
 - **Step 1: court mapping and player tracking** (needs a calibration)
 - **Step 2: rallies, clips and highlights** (from the sound; works without calibration)
 - **Step 3: ball tracking and bounces** (during points; needs a calibration)
+- **Step 4: shots, how each point ended, the match report and each player's
+  highlights** (needs a calibration; better the more the ball is seen)
 
 ## Install
 
@@ -18,6 +20,8 @@ python -m venv .venv && source .venv/bin/activate
 # 1. PyTorch for your machine (CUDA, Apple MPS or CPU): https://pytorch.org/get-started/locally/
 # 2. The engine with detection and the calibration tool
 pip install -e ".[detect,calibrate,dev]"
+# 3. Optional: a written coach's summary in the report, from the Claude API
+pip install -e ".[coach]"
 ```
 
 ## Use
@@ -35,7 +39,10 @@ padel-engine clips match.mp4 --out runs/match1
 # The ball, during the points clips found (uses the players' boxes from track).
 padel-engine ball match.mp4 -c calibration.json --out runs/match1
 
-# Or everything in one go (tracking and the ball only if -c is given).
+# Shots, the match report and a highlight reel per player (after the steps above).
+padel-engine report --out runs/match1 --video match.mp4
+
+# Or everything in one go (tracking, the ball and the report only if -c is given).
 padel-engine analyze match.mp4 -c calibration.json --out runs/match1
 ```
 
@@ -71,6 +78,10 @@ Each run folder contains:
 | `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |
 | `highlights.mp4` | The best rallies, cut tight (3 s either side) and joined in match order |
 | `condensed.mp4` | Every point back to back with the dead time between points cut, at 720p |
+| `shots.json` | Every shot: time, point, who hit it, kind (serve, return, volley, smash, bandeja, lob, groundstroke) and where they stood; and every point: shots, who played the last one, and how it ended |
+| `report.json` | The match report: per team and per player numbers, formations, tips, each player's best moments, and the coach's summary if enabled |
+| `report.md` | The same report as a readable page |
+| `players/P1.mp4` … | Each player's own highlight reel (their winners, smashes, bandejas and long points they won), at 720p |
 
 Players are numbered by where they stand when first seen: **P1** near-left
 and **P2** near-right (team A, camera side at the start), **P3** far-left
@@ -136,9 +147,37 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    image and that spot is on the court: the down and up paths are crossed to
    find the contact between frames, because the nearest frame has the ball
    a little up, which at the far wall moves the bounce most of a metre.
+12. **Shots.** Every hit sound inside a point is a candidate shot. The hitter
+   is the player whose box the ball is nearest at that moment (within 0.6 of
+   their height); a hit with the ball in view but nobody near it was the
+   glass or the floor and is dropped. When the ball isn't seen, the team is
+   worked out from the nearest seen shot, since teams alternate. The kind comes from the shot's number (serve,
+   return), where the ball was against the player (above their head: a
+   smash at the net, a bandeja further back), where they stood (a volley at
+   the net), and where the ball landed next (a lob lands deep on the other
+   side after a long flight). Forehand and backhand need a pose model and
+   come later.
+13. **How a point ended.** A bounce on the other side after the last shot is
+   a winner. A last shot seen leaving that never lands on the other side is
+   an error: "net" if it ends in the band around the net, otherwise "out".
+   Anything else is left unknown rather than guessed.
+14. **Match report.** Per player: shots by kind, winners, errors (and which
+   shot they came from), time at the net, metres per point and top speed,
+   counting only time during points. Per team: points won and how often
+   both were at the net, split, or both back. Tips are simple rules on those
+   numbers (for example, a team that is split a lot is open through the
+   middle) and appear once there are at least 5 points.
+15. **Player highlights.** Each player's winners, smashes, bandejas and long
+   points their team won (8+ shots, 3+ of them theirs) are ranked, overlaps
+   dropped, and the best 10 cut into `players/P#.mp4`.
+16. **Coach's summary** (optional). With the `coach` extra installed and
+   `ANTHROPIC_API_KEY` set, the report's numbers (no video, no names, players
+   as P1-P4) are sent to Claude (`report.ai_model`, Claude Opus 5.5 by
+   default) for a short written summary. Without a key this step is skipped.
 
-Settings live in `padel_engine/config.py` (the `audio`, `clips` and `ball`
-sections cover all of the above); pass a JSON file of overrides with `--config`.
+Settings live in `padel_engine/config.py` (the `audio`, `clips`, `ball`,
+`shots` and `report` sections cover all of the above); pass a JSON file of
+overrides with `--config`.
 For example, to rule out a neighbouring court seen through the glass (pixels
 of the image you calibrated on):
 
@@ -177,3 +216,9 @@ so they need neither a GPU nor real footage. Clip tests need FFmpeg.
   look like a ball. Rule those areas out with `ball.ignore_regions`.
 - Hit sensitivity and the "intense" bar are tuned on synthetic audio and
   need checking against real recordings and phone microphones.
+- Who hit each shot and its kind are only as good as the ball tracking. With
+  the ball unseen at a hit, the team is a guess from the order of play
+  (counted from the nearest hit where the ball was seen), so a missed hit
+  sound flips the guess until the ball is seen again. Shot
+  kinds and the reach and lob thresholds (`shots` settings) need tuning on
+  real matches.

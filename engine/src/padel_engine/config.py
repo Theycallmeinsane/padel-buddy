@@ -175,6 +175,37 @@ class BallConfig(BaseModel):
     )
 
 
+class ShotsConfig(BaseModel):
+    enabled: bool = True
+    contact_window_s: float = Field(
+        0.15, gt=0, description="Ball samples this close to a hit sound count as the ball at contact."
+    )
+    reach: float = Field(
+        0.6, ge=0, description="How far from a player's box (in box heights) the ball can be and still be their hit."
+    )
+    min_ball_coverage: float = Field(
+        0.6, ge=0, le=1, description="Share of a gap the ball must be seen in before 'no bounce seen' means a volley."
+    )
+    lob_min_flight_s: float = Field(1.3, gt=0, description="A deep shot this long in the air before bouncing is a lob.")
+    lob_min_depth_m: float = Field(
+        6.95, ge=0, description="How far past the net a lob lands: by default behind the service line."
+    )
+
+
+class ReportConfig(BaseModel):
+    enabled: bool = True
+    min_points: int = Field(5, ge=1, description="Fewer points than this and the report gives numbers but no tips.")
+    ai_summary: bool = Field(
+        True,
+        description="Ask Claude for a written coaching summary when ANTHROPIC_API_KEY is set. Only the report's "
+        "numbers are sent (players are P1-P4), never video or names.",
+    )
+    ai_model: str = "claude-opus-5-5"
+    player_reels: bool = Field(True, description="Cut a highlight reel of each player's best moments.")
+    player_moments: int = Field(10, ge=1, description="Most moments in a player's highlights.")
+    player_reel_height: int = Field(720, gt=0)
+
+
 class OutputConfig(BaseModel):
     preview_video: bool = False  # the web viewer draws the same overlay live
     heatmaps: bool = True
@@ -187,4 +218,6 @@ class EngineConfig(BaseModel):
     audio: AudioConfig = AudioConfig()
     clips: ClipsConfig = ClipsConfig()
     ball: BallConfig = BallConfig()
+    shots: ShotsConfig = ShotsConfig()
+    report: ReportConfig = ReportConfig()
     output: OutputConfig = OutputConfig()

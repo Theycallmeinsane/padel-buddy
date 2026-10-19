@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, create_engine, event
+from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -41,6 +41,7 @@ class Match(Base):
     video_received: Mapped[int] = mapped_column(Integer, default=0)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     calibration: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # engine Calibration.to_dict()
+    player_names: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"P1": "Maya", ...}
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(
@@ -83,6 +84,21 @@ class Database:
             # The API and a worker starting together on a fresh database can
             # both try to create a table; the second pass finds them all.
             Base.metadata.create_all(self.engine)
+        self._add_new_columns()
+
+    def _add_new_columns(self) -> None:
+        """Add nullable columns that newer versions brought to an existing database."""
+        found = inspect(self.engine)
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in found.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in have and col.nullable:
+                    kind = col.type.compile(dialect=self.engine.dialect)
+                    with self.engine.begin() as conn:
+                        try:
+                            conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {kind}'))
+                        except OperationalError:
+                            pass  # another process added it first
 
     def session(self) -> Iterator[Session]:
         with self.sessions() as s:

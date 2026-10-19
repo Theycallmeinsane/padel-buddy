@@ -22,6 +22,8 @@ dependencies = [
 detect = ["ultralytics>=8.3", "lap>=0.5"]
 # Desktop click-to-calibrate tool.
 calibrate = ["matplotlib>=3.8"]
+# Written coaching summary in the match report (needs ANTHROPIC_API_KEY).
+coach = ["anthropic>=1.15"]
 dev = ["pytest>=8"]
 
 [project.scripts]

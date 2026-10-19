@@ -252,6 +252,15 @@ def test_serves_the_web_app_next_to_the_api(tmp_path):
     assert c.get("/matches").json() == []
 
 
+def test_web_pages_and_api_routes_never_share_a_path(settings):
+    # API routes win when one process serves both, so a page at /people/ would lose
+    # its own files (people/__next._tree.txt) to GET /people/{name}.
+    app_dir = Path(__file__).resolve().parents[2] / "web" / "app"
+    pages = {p.name for p in app_dir.iterdir() if (p / "page.tsx").exists()}
+    api = {route.path.strip("/").split("/")[0] for route in create_app(settings).routes}
+    assert pages and not pages & api
+
+
 def test_import_a_video_already_on_disk(settings, tmp_path):
     from padel_api.main import import_video
 
@@ -294,3 +303,78 @@ def test_padel_buddy_import_command_queues_analysis(settings, tmp_path, capsys):
     assert "Added 'Sunday'" in capsys.readouterr().out
     (m,) = TestClient(create_app(settings)).get("/matches").json()
     assert m["status"] == "queued" and m["job"]["status"] == "queued"
+
+
+def _fake_report_runner(video, run_dir, calibration, config, on_progress):
+    """Writes the shots and report the engine would make for the scripted match in engine/tests."""
+    import match_fixture as mf
+    from padel_engine.report import build_report
+    from padel_engine.schemas import ShotsSummary
+    from padel_engine.shots import Ball, NetBand, Players, Rally, find_shots
+
+    overlay = mf.overlay()
+    shots, points = find_shots(mf.hits(), [Rally(*r) for r in mf.RALLIES], Players(overlay),
+                               Ball(mf.ball_track()), NetBand(overlay["court_to_image"]))
+    summary = ShotsSummary(engine_version="test", shots=shots, points=points, outputs={})
+    (run_dir / "shots.json").write_text(summary.model_dump_json())
+    report = build_report(summary, overlay, mf.clips())
+    report.players[2].reel = "players/P3.mp4"
+    (run_dir / "report.json").write_text(report.model_dump_json())
+
+
+def test_players_are_named_and_found_across_matches(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    m = client.post("/matches", json={"title": "Sunday"}).json()
+    client.put(f"/matches/{m['id']}/video", content=data)
+    client.post(f"/matches/{m['id']}/analyze")
+    assert worker.run_once(Database(settings.db_url), LocalStorage(settings.data_dir), "test", _fake_report_runner)
+
+    r = client.put(f"/matches/{m['id']}/players", json={"names": {"P3": "Maya", "P1": "  Ali   Khan "}})
+    assert r.status_code == 200 and r.json()["player_names"] == {"P1": "Ali Khan", "P3": "Maya"}
+    assert client.put(f"/matches/{m['id']}/players", json={"names": {"P5": "x"}}).status_code == 422
+
+    res = client.get(f"/matches/{m['id']}/results").json()
+    assert res["report"]["points"] == 3 and len(res["shots"]["shots"]) == 14
+
+    p3 = client.get(f"/matches/{m['id']}/players/P3").json()
+    assert (p3["name"], p3["team"], p3["reel"]) == ("Maya", "B", "players/P3.mp4")
+    assert p3["report"]["winners"] == 1 and {s["player"] for s in p3["shots"]} == {"P3"}
+    assert client.get(f"/matches/{m['id']}/players/P9").status_code == 404
+
+    assert client.get("/people").json() == [{"name": "Ali Khan", "matches": 1}, {"name": "Maya", "matches": 1}]
+    maya = client.get("/people/maya").json()
+    assert [(h["match_title"], h["player"]) for h in maya] == [("Sunday", "P3")]
+    assert client.get("/people/nobody").status_code == 404
+
+    md = client.get(f"/matches/{m['id']}/report.md")
+    assert md.status_code == 200 and "Maya (P3)" in md.text
+
+    client.put(f"/matches/{m['id']}/players", json={"names": {"P1": ""}})
+    assert client.get(f"/matches/{m['id']}").json()["player_names"] == {"P3": "Maya"}
+
+
+def test_columns_added_in_newer_versions_reach_an_old_database(settings):
+    from sqlalchemy import inspect, text
+
+    settings.data_dir.mkdir(parents=True)
+    db = Database(settings.db_url)
+    db.create_all()
+    with db.engine.begin() as conn:
+        conn.execute(text("ALTER TABLE matches DROP COLUMN player_names"))
+    Database(settings.db_url).create_all()
+    assert "player_names" in {c["name"] for c in inspect(db.engine).get_columns("matches")}
+
+
+def test_the_claude_key_in_env_reaches_the_engine(tmp_path, monkeypatch):
+    import os
+    import threading
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=sk-test\n")
+    settings = Settings(_env_file=env, data_dir=tmp_path / "data")
+    assert settings.anthropic_api_key.get_secret_value() == "sk-test"
+    stop = threading.Event()
+    stop.set()
+    worker.run_forever(settings, stop)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test"

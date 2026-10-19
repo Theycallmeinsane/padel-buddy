@@ -23,6 +23,7 @@ export type Match = {
   duration_s: number | null;
   calibrated: boolean;
   error: string | null;
+  player_names?: Record<string, string>; // P1..P4 -> name
   job: Job | null;
 };
 
@@ -115,7 +116,109 @@ export type BallTrack = {
   bounces: Bounce[];
 };
 
-export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | null; ball?: BallSummary | null };
+export type ShotKind = "serve" | "return" | "volley" | "smash" | "bandeja" | "lob" | "groundstroke" | "unknown";
+
+export type Shot = {
+  time_s: number;
+  rally: number;
+  number: number; // 1 for the serve
+  player: string | null; // null when only the team could be told
+  team: "A" | "B" | null;
+  kind: ShotKind;
+  zone: "net" | "mid" | "back" | null;
+  court_x: number | null;
+  court_y: number | null;
+  by: "ball" | "turn";
+};
+
+export type PointEnding = {
+  rally: number;
+  start_s: number;
+  end_s: number;
+  shots: number;
+  last_player: string | null;
+  last_team: "A" | "B" | null;
+  ending: "winner" | "error" | "unknown";
+  detail: "net" | "out" | null;
+  won_by: "A" | "B" | null;
+};
+
+export type ShotsSummary = { shots: Shot[]; points: PointEnding[]; outputs: Record<string, string> };
+
+export type PlayerMoment = {
+  time_s: number;
+  start_s: number;
+  end_s: number;
+  rally: number;
+  kind: string; // winner, smash, bandeja, point
+  score: number;
+};
+
+export type PlayerReport = {
+  player: string;
+  team: "A" | "B";
+  shots: number;
+  shot_kinds: Partial<Record<ShotKind, number>>;
+  winners: number;
+  errors: number;
+  errors_by_kind: Record<string, number>;
+  distance_per_point_m: number;
+  top_speed_mps: number;
+  zone_share: Record<string, number>;
+  side_share: Record<string, number>;
+  highlights: PlayerMoment[];
+  reel: string | null;
+};
+
+export type TeamReport = {
+  team: "A" | "B";
+  players: string[];
+  points_won: number;
+  winners: number;
+  errors: number;
+  formation: Record<"both_net" | "split" | "both_back" | "other", number>;
+  lob_share: number;
+};
+
+export type Tip = { who: string; topic: string; text: string };
+
+export type MatchReport = {
+  duration_s: number;
+  points: number;
+  points_with_ending: number;
+  shots: number;
+  avg_shots_per_point: number;
+  avg_point_s: number;
+  longest_point: { rally: number; start_s: number; duration_s: number; shots: number } | null;
+  teams: TeamReport[];
+  players: PlayerReport[];
+  tips: Tip[];
+  coach_summary: string | null;
+  outputs: Record<string, string>;
+};
+
+/** One player in one match (GET /matches/{id}/players/{P1..P4} and /people/{name}). */
+export type PlayerInMatch = {
+  match_id: string;
+  match_title: string;
+  match_date: string;
+  player: string;
+  name: string | null;
+  team: "A" | "B" | null;
+  report: PlayerReport | null;
+  shots: Shot[];
+  reel: string | null;
+};
+
+export type Person = { name: string; matches: number };
+
+export type Results = {
+  tracking: TrackingSummary | null;
+  clips: ClipsSummary | null;
+  ball?: BallSummary | null;
+  shots?: ShotsSummary | null;
+  report?: MatchReport | null;
+};
 
 // -- connection settings (kept in this browser only) -------------------------
 
@@ -221,4 +324,16 @@ export class Api {
   videoUrl = (id: string) => this.media(`/matches/${id}/video`);
   overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`);
   ballTrack = (id: string, rel: string) => this.request<BallTrack>(`/matches/${id}/files/${rel}`);
+  namePlayers = (id: string, names: Record<string, string>) =>
+    this.request<Match>(`/matches/${id}/players`, { method: "PUT", body: JSON.stringify({ names }) });
+  player = (id: string, pid: string) => this.request<PlayerInMatch>(`/matches/${id}/players/${pid}`);
+  reportUrl = (id: string) => this.media(`/matches/${id}/report.md`);
+  people = () => this.request<Person[]>("/people");
+  person = (name: string) => this.request<PlayerInMatch[]>(`/people/${encodeURIComponent(name)}`);
+}
+
+/** "Maya (P3)" when the player has a name, else "P3". */
+export function playerLabel(pid: string, names?: Record<string, string>): string {
+  const name = names?.[pid];
+  return name ? `${name} (${pid})` : pid;
 }

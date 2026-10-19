@@ -1,8 +1,9 @@
 # Padel Buddy
 
 Upload a long padel match video and get the rallies cut into clips, a
-highlight reel, player movement stats and, later, shot and mistake analysis
-with a written report.
+highlight reel, player movement stats, ball tracking, shot and mistake
+analysis with a written report, and each player's own highlights and numbers
+across matches.
 
 It starts as a personal tool and is built so the same engine can serve a web
 app, phones, an Android app and a desktop app.
@@ -15,7 +16,8 @@ app, phones, an Android app and a desktop app.
 | 2 | Rally detection, clips (±30 s around intense moments) and highlights | Built, awaiting real footage |
 | 3 | API, job queue and storage | Built ([api/](api/)) |
 | 3 | Web app (desktop and phone browsers) | Built ([web/](web/)) |
-| 4 | Ball tracking, shots, mistakes and match report | Later |
+| 4 | Ball tracking, shots, how points ended, match report, per-player highlights | Built, awaiting real footage |
+| 5 | Pose (forehand / backhand, technique), automatic court detection | Later |
 
 See [docs/architecture.md](docs/architecture.md) for how the pieces fit.
 

@@ -95,3 +95,100 @@ class BallSummary(BaseModel):
     flights: int  # continuous stretches of ball flight
     bounces: int  # on the court floor
     outputs: dict[str, str]
+
+
+class ShotInfo(BaseModel):
+    time_s: float
+    rally: int  # RallyInfo.index
+    number: int  # 1 for the serve
+    player: str | None  # None when only the team could be told
+    team: str | None
+    kind: str  # serve, return, volley, smash, bandeja, lob, groundstroke
+    zone: str | None  # hitter's depth zone: net / mid / back
+    court_x: float | None  # hitter's position, metres
+    court_y: float | None
+    # "ball": the ball was seen at the hitter; "turn": inferred from whose turn it was
+    by: str
+
+
+class PointInfo(BaseModel):
+    rally: int
+    start_s: float
+    end_s: float
+    shots: int
+    last_player: str | None
+    last_team: str | None
+    # winner: the last shot bounced in and wasn't returned; error: it never
+    # bounced in the other half (net, or out before bouncing); unknown: the
+    # ball wasn't seen well enough to tell
+    ending: str
+    detail: str | None  # for errors: "net" or "out"
+    won_by: str | None  # team
+
+
+class ShotsSummary(BaseModel):
+    engine_version: str
+    shots: list[ShotInfo]
+    points: list[PointInfo]
+    outputs: dict[str, str]
+
+
+class PlayerMoment(BaseModel):
+    """One of a player's best moments, for their own highlights."""
+
+    time_s: float  # the shot
+    start_s: float  # what the player's reel shows
+    end_s: float
+    rally: int
+    kind: str  # winner, smash, bandeja, volley, lob, ...
+    score: float
+
+
+class PlayerReport(BaseModel):
+    player: str
+    team: str
+    shots: int
+    shot_kinds: dict[str, int]
+    winners: int
+    errors: int
+    errors_by_kind: dict[str, int]  # the kind of shot that ended the point in an error
+    # Movement during points only, so walking between points doesn't count
+    distance_per_point_m: float
+    top_speed_mps: float  # 95th percentile during points
+    zone_share: dict[str, float]  # net / mid / back, during points
+    side_share: dict[str, float]
+    highlights: list[PlayerMoment] = []
+    reel: str | None = None  # the player's own highlight reel, relative path
+
+
+class TeamReport(BaseModel):
+    team: str
+    players: list[str]
+    points_won: int
+    winners: int
+    errors: int
+    # Share of point time with both players at the net, one up one back, both back
+    formation: dict[str, float]
+    lob_share: float  # of the team's shots from the back half that were lobs
+
+
+class Tip(BaseModel):
+    who: str  # a player, a team ("A") or "match"
+    topic: str  # net, formation, errors, lob, movement
+    text: str
+
+
+class MatchReport(BaseModel):
+    engine_version: str
+    duration_s: float
+    points: int
+    points_with_ending: int  # points whose ending (winner/error) could be told
+    shots: int
+    avg_shots_per_point: float
+    avg_point_s: float
+    longest_point: dict[str, float] | None  # rally, start_s, duration_s, shots
+    teams: list[TeamReport]
+    players: list[PlayerReport]
+    tips: list[Tip]
+    coach_summary: str | None = None  # written by Claude when enabled
+    outputs: dict[str, str]
