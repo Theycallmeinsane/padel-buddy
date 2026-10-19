@@ -30,14 +30,22 @@ To use it from your phone on the same Wi-Fi, run the API with
 
 - **Matches** (`/`): upload with pause and resume (pick the same file again
   after a reload and it continues where it stopped), and the list of matches.
-- **Match** (`/match/?id=…`): calibration, analysis progress, highlight reel,
-  clip gallery, player table and heatmaps.
+- **Match** (`/match/?id=…`): calibration, analysis progress, the viewer,
+  highlight reel, best points, player table and heatmaps.
+
+The viewer plays the condensed match (every point back to back) or the full
+video, and draws over it: court lines, a box per player, and a top-down
+minimap with the last two seconds of movement. Below it, a timeline of every
+point; the best ones are highlighted, and clicking one plays it. Lines and
+players need a calibrated court; they come from the engine's `overlay.json`.
+The original video only plays where the browser supports its codec (iPhone
+HEVC often doesn't), so points-only is the default.
 - **Settings** (`/settings/`): API address and optional token.
 
 ## Checks
 
 ```bash
-npm test           # upload/resume logic and the API client
+npm test           # upload/resume logic, the API client, the viewer's clock
 npm run typecheck
 npm run build
 ```

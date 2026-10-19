@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Calibrator from "@/components/Calibrator";
+import MatchViewer from "@/components/MatchViewer";
 import Results from "@/components/Results";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
 import { Api, ApiError, type Match, type Results as ResultsData } from "@/lib/api";
@@ -148,6 +149,9 @@ function MatchView() {
         </section>
       )}
 
+      {results && (
+        <MatchViewer key={match.job?.id} api={api} matchId={id} durationS={match.duration_s} data={results} />
+      )}
       {results && <Results api={api} matchId={id} data={results} />}
 
       {error && <p className="error small">{error}</p>}

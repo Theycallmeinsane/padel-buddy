@@ -166,6 +166,13 @@ def test_end_to_end_clips(tmp_path, monkeypatch):
     expected = sum(min(script.duration, r.end_s + 2) - max(0, r.start_s - 2) for r in summary.rallies)
     assert summary.condensed_s == pytest.approx(expected, abs=0.2)
     assert abs(probe_duration(run / "condensed.mp4") - expected) < 1.0
+    # Where each point sits in condensed.mp4, from the measured part lengths.
+    segs = summary.condensed_segments
+    assert [s[:2] for s in segs] == [
+        (pytest.approx(max(0, r.start_s - 2), abs=0.01), pytest.approx(min(script.duration, r.end_s + 2), abs=0.01))
+        for r in summary.rallies
+    ]
+    assert segs[0][2] == 0 and all(b[2] - a[2] == pytest.approx(a[1] - a[0], abs=0.1) for a, b in zip(segs, segs[1:]))
     data = json.loads((run / "clips.json").read_text())
     assert data["clips"][0]["file"] == "clips/clip_001.mp4"
     assert (run / "hits.csv").read_text().startswith("time_s,strength")
