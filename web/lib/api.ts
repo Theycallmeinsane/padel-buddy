@@ -91,7 +91,31 @@ export type Overlay = {
   players: Record<string, { team: "A" | "B"; t: number[]; box: number[]; xy: number[] }>;
 };
 
-export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | null };
+export type BallSummary = {
+  searched_s: number;
+  ball_frames: number;
+  seen_fraction: number;
+  flights: number;
+  bounces: number;
+  outputs: Record<string, string>;
+};
+
+export type Bounce = { time_s: number; u: number; v: number; court_x: number; court_y: number };
+
+/** The engine's ball_track.json. */
+export type BallTrack = {
+  version: number;
+  size: [number, number];
+  fps: number;
+  spans: [number, number][]; // where the ball was looked for (the points)
+  // Sample i: t[i], uv[2i..2i+1] in source pixels, flight[i]
+  t: number[];
+  uv: number[];
+  flight: number[];
+  bounces: Bounce[];
+};
+
+export type Results = { tracking: TrackingSummary | null; clips: ClipsSummary | null; ball?: BallSummary | null };
 
 // -- connection settings (kept in this browser only) -------------------------
 
@@ -196,4 +220,5 @@ export class Api {
   fileUrl = (id: string, rel: string) => this.media(`/matches/${id}/files/${rel}`);
   videoUrl = (id: string) => this.media(`/matches/${id}/video`);
   overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`);
+  ballTrack = (id: string, rel: string) => this.request<BallTrack>(`/matches/${id}/files/${rel}`);
 }

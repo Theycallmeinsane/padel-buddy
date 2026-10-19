@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Api, Overlay, Rally, Results } from "@/lib/api";
+import type { Api, BallTrack, Bounce, Overlay, Rally, Results } from "@/lib/api";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
 
@@ -9,6 +9,10 @@ import { formatTime } from "./common";
 const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
 const BOX_GAP_S = 0.3; // hide a player when their nearest sample is further away than this
 const TRAIL_S = 2;
+const BALL_COLOR = "#f4ff3d";
+const BALL_TRAIL_S = 0.4;
+const BOUNCE_SHOW_S = 1.2; // a bounce ring on the video fades over this long
+const MAP_BOUNCES_S = 6; // bounces stay on the minimap this long
 
 // Painted lines in court metres (x across, y from the near wall), net at y = 10.
 const COURT_LINES: [number, number, number, number][] = [
@@ -17,7 +21,7 @@ const COURT_LINES: [number, number, number, number][] = [
   [5, 2.85, 5, 17.15],
 ];
 
-type Layers = { lines: boolean; players: boolean; minimap: boolean };
+type Layers = { lines: boolean; players: boolean; ball: boolean; minimap: boolean };
 type Source = "points" | "full";
 
 export default function MatchViewer({
@@ -34,6 +38,7 @@ export default function MatchViewer({
   const clips = data.clips;
   const rallies = useMemo(() => clips?.rallies ?? [], [clips]);
   const overlayFile = data.tracking?.outputs.overlay ?? null;
+  const ballFile = data.ball?.outputs.track ?? null;
   const condensed = clips?.condensed && clips.condensed_segments?.length ? clips.condensed : null;
   const total = durationS || Math.max(1, ...rallies.map((r) => r.end_s));
   const best = useMemo(() => new Set(clips?.clips.flatMap((c) => c.rallies ?? []) ?? []), [clips]);
@@ -42,7 +47,8 @@ export default function MatchViewer({
   const [fullFailed, setFullFailed] = useState(false);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [overlayError, setOverlayError] = useState<string | null>(null);
-  const [layers, setLayers] = useState<Layers>({ lines: true, players: true, minimap: true });
+  const [ball, setBall] = useState<BallTrack | null>(null);
+  const [layers, setLayers] = useState<Layers>({ lines: true, players: true, ball: true, minimap: true });
   const [matchTime, setMatchTime] = useState(0);
   const narrow = useMediaQuery("(max-width: 720px)");
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -66,6 +72,18 @@ export default function MatchViewer({
     };
   }, [api, matchId, overlayFile]);
 
+  useEffect(() => {
+    if (!ballFile) return;
+    let live = true;
+    api.ballTrack(matchId, ballFile).then(
+      (b) => live && setBall(b),
+      (e) => live && setOverlayError((e as Error).message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [api, matchId, ballFile]);
+
   // Repaint every frame: it is cheap and follows playback, seeking and resizing alike.
   useEffect(() => {
     const video = videoRef.current;
@@ -81,11 +99,11 @@ export default function MatchViewer({
         shown = t;
         setMatchTime(t);
       }
-      paint(canvas, video, overlay, layers, t);
+      paint(canvas, video, overlay, ball, layers, t);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [overlay, layers, segments]);
+  }, [overlay, ball, layers, segments]);
 
   const seek = useCallback(
     (t: number) => {
@@ -146,7 +164,9 @@ export default function MatchViewer({
           />
           <canvas ref={canvasRef} aria-hidden="true" />
         </div>
-        {overlay && layers.minimap && <Minimap overlay={overlay} t={matchTime} sideways={narrow} />}
+        {overlay && layers.minimap && (
+          <Minimap overlay={overlay} bounces={layers.ball ? ball?.bounces : undefined} t={matchTime} sideways={narrow} />
+        )}
       </div>
 
       <div className="row small" style={{ marginTop: 8 }}>
@@ -161,6 +181,7 @@ export default function MatchViewer({
             [
               ["lines", "Court lines"],
               ["players", "Players"],
+              ...(ball ? ([["ball", "Ball"]] as const) : []),
               ["minimap", "Minimap"],
             ] as const
           ).map(([key, label]) => (
@@ -186,12 +207,25 @@ export default function MatchViewer({
       {!overlayFile && (
         <p className="muted small">Calibrate the court and analyse again to see court lines and the players.</p>
       )}
+      {data.ball && (
+        <p className="muted small">
+          Ball found in {Math.round(data.ball.seen_fraction * 100)}% of the frames during points, with{" "}
+          {data.ball.bounces} bounces on the court.
+        </p>
+      )}
       {overlayError && <p className="error small">Couldn&apos;t load the tracking overlay: {overlayError}</p>}
     </section>
   );
 }
 
-function paint(canvas: HTMLCanvasElement, video: HTMLVideoElement, overlay: Overlay | null, layers: Layers, t: number) {
+function paint(
+  canvas: HTMLCanvasElement,
+  video: HTMLVideoElement,
+  overlay: Overlay | null,
+  ball: BallTrack | null,
+  layers: Layers,
+  t: number,
+) {
   const dpr = window.devicePixelRatio || 1;
   const w = video.clientWidth;
   const h = video.clientHeight;
@@ -203,18 +237,19 @@ function paint(canvas: HTMLCanvasElement, video: HTMLVideoElement, overlay: Over
   if (!ctx) return;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!overlay || !video.videoWidth || !(layers.lines || layers.players)) return;
+  const size = overlay?.size ?? ball?.size;
+  if (!size || !video.videoWidth || !(layers.lines || layers.players || layers.ball)) return;
 
   // The picture is letterboxed inside the element, and may be smaller than the
   // source the engine measured in (the condensed match is 720p).
   const fit = Math.min(w / video.videoWidth, h / video.videoHeight);
   const pw = video.videoWidth * fit;
   const ph = video.videoHeight * fit;
-  const s = pw / overlay.size[0];
+  const s = pw / size[0];
   ctx.setTransform(dpr * s, 0, 0, dpr * s, (dpr * (w - pw)) / 2, (dpr * (h - ph)) / 2);
   const px = 1 / s; // one screen pixel, in source pixels
 
-  if (layers.lines) {
+  if (overlay && layers.lines) {
     ctx.lineWidth = 1.5 * px;
     for (const line of overlay.lines) {
       ctx.strokeStyle = line.name === "net" ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.65)";
@@ -223,7 +258,7 @@ function paint(canvas: HTMLCanvasElement, video: HTMLVideoElement, overlay: Over
       ctx.stroke();
     }
   }
-  if (layers.players) {
+  if (overlay && layers.players) {
     ctx.lineWidth = 2 * px;
     ctx.font = `600 ${13 * px}px system-ui, sans-serif`;
     ctx.textBaseline = "bottom";
@@ -236,9 +271,63 @@ function paint(canvas: HTMLCanvasElement, video: HTMLVideoElement, overlay: Over
       ctx.fillText(pid, x1, y1 - 3 * px);
     }
   }
+  if (ball && layers.ball) paintBall(ctx, ball, t, px);
 }
 
-function Minimap({ overlay, t, sideways }: { overlay: Overlay; t: number; sideways: boolean }) {
+function paintBall(ctx: CanvasRenderingContext2D, ball: BallTrack, t: number, px: number) {
+  const i = nearest(ball.t, t, 1.5 / ball.fps);
+  if (i >= 0) {
+    // A short tail from the same flight, then the ball itself.
+    ctx.strokeStyle = BALL_COLOR;
+    ctx.lineWidth = 2 * px;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    let started = false;
+    for (let k = lowerBound(ball.t, t - BALL_TRAIL_S); k <= i; k++) {
+      if (ball.flight[k] !== ball.flight[i]) continue;
+      if (started) ctx.lineTo(ball.uv[2 * k], ball.uv[2 * k + 1]);
+      else ctx.moveTo(ball.uv[2 * k], ball.uv[2 * k + 1]);
+      started = true;
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.arc(ball.uv[2 * i], ball.uv[2 * i + 1], 6 * px, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+  // Rings that grow and fade where the ball just bounced.
+  ctx.lineWidth = 2 * px;
+  for (const b of recentBounces(ball.bounces, t, BOUNCE_SHOW_S)) {
+    const age = (t - b.time_s) / BOUNCE_SHOW_S;
+    ctx.globalAlpha = 1 - age;
+    ctx.strokeStyle = BALL_COLOR;
+    ctx.beginPath();
+    ctx.ellipse(b.u, b.v, (8 + 22 * age) * px, (4 + 9 * age) * px, 0, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Bounces from the last `within` seconds up to `t` (bounces are sorted by time). */
+function recentBounces(bounces: Bounce[], t: number, within: number): Bounce[] {
+  const out = [];
+  for (let k = bounces.length - 1; k >= 0 && bounces[k].time_s > t - within; k--) {
+    if (bounces[k].time_s <= t) out.push(bounces[k]);
+  }
+  return out;
+}
+
+function Minimap({
+  overlay,
+  bounces,
+  t,
+  sideways,
+}: {
+  overlay: Overlay;
+  bounces?: Bounce[];
+  t: number;
+  sideways: boolean;
+}) {
   // Upright: far wall at the top, as the camera sees it. Sideways (phones, under
   // the video): turned a quarter clockwise, far wall on the right.
   const P = (x: number, y: number): [number, number] => (sideways ? [y, x] : [x, 20 - y]);
@@ -259,6 +348,20 @@ function Minimap({ overlay, t, sideways }: { overlay: Overlay; t: number; sidewa
         <line key={i} {...line(x1, y1, x2, y2)} className="court-line" />
       ))}
       <line {...line(-0.4, 10, 10.4, 10)} className="net" />
+      {bounces &&
+        recentBounces(bounces, t, MAP_BOUNCES_S).map((b) => {
+          const [x, y] = P(b.court_x, b.court_y);
+          return (
+            <circle
+              key={b.time_s}
+              cx={x}
+              cy={y}
+              r={0.22}
+              className="bounce"
+              style={{ opacity: 1 - (t - b.time_s) / MAP_BOUNCES_S }}
+            />
+          );
+        })}
       {Object.entries(overlay.players).map(([pid, p]) => {
         const i = nearest(p.t, t, 0.5);
         if (i < 0) return null;
