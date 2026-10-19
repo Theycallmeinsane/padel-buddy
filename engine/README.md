@@ -78,10 +78,13 @@ Each run folder contains:
 | `clips/clip_001.mp4` … | The best points, each whole from 5 s before the serve to 3 s after the last shot, plus a `.jpg` thumbnail |
 | `highlights.mp4` | The best rallies, cut tight (3 s either side) and joined in match order |
 | `condensed.mp4` | Every point back to back with the dead time between points cut, at 720p |
-| `shots.json` | Every shot: time, point, who hit it, kind (serve, return, volley, smash, bandeja, lob, groundstroke) and where they stood; and every point: shots, who played the last one, and how it ended |
-| `report.json` | The match report: per team and per player numbers, formations, tips, each player's best moments, and the coach's summary if enabled |
+| `points/point_001.mp4` … | Every point on its own (2 s either side), at 720p, numbered like the app's "Point 1" |
+| `shots.json` | Every shot: time, point, who hit it, kind (serve, return, volley, smash, vibora, bandeja, lob, flat, groundstroke), where they stood, its pace and whether it stayed in play; and every point: shots, who played the last one, and how it ended |
+| `report.json` | The match report: per team and per player numbers, formations, each player's success rate per kind of shot, tips, each player's best moments and winners, the shorts, and the coach's summary if enabled |
 | `report.md` | The same report as a readable page |
-| `players/P1.mp4` … | Each player's own highlight reel (their winners, smashes, bandejas and long points they won), at 720p |
+| `players/P1.mp4` … | Each player's own highlight reel (their winners, overheads and long points they won), at 720p |
+| `players/P1_winners.mp4` … | Every point the player finished with a winner, joined, at 720p |
+| `shorts/point_012.mp4`, `shorts/P1_winner.mp4` … | Vertical 9:16 shorts for phones: the 5 best points, and each player's best winner |
 
 Players are numbered by where they stand when first seen: **P1** near-left
 and **P2** near-right (team A, camera side at the start), **P3** far-left
@@ -151,12 +154,17 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    is the player whose box the ball is nearest at that moment (within 0.6 of
    their height); a hit with the ball in view but nobody near it was the
    glass or the floor and is dropped. When the ball isn't seen, the team is
-   worked out from the nearest seen shot, since teams alternate. The kind comes from the shot's number (serve,
-   return), where the ball was against the player (above their head: a
-   smash at the net, a bandeja further back), where they stood (a volley at
-   the net), and where the ball landed next (a lob lands deep on the other
-   side after a long flight). Forehand and backhand need a pose model and
-   come later.
+   worked out from the nearest seen shot, since teams alternate. The kind
+   comes from the shot's number (serve, return), where the ball was against
+   the player (above their head: an overhead, a smash if at the net), where
+   they stood (a volley at the net), where the
+   ball landed next (a lob lands deep on the other side after a long
+   flight) and the shot's pace: court metres from the hitter to the bounce
+   per second in the air. An overhead from the back at 15 m/s or more is a
+   vibora (22 m/s or more, a smash), slower a bandeja; a groundstroke at
+   12 m/s or more is a flat drive. Without a bounce seen the pace is
+   unknown, and the slower kind is kept. Forehand and backhand need a pose
+   model and come later.
 13. **How a point ended.** A bounce on the other side after the last shot is
    a winner. A last shot seen leaving that never lands on the other side is
    an error: "net" if it ends in the band around the net, otherwise "out".
@@ -167,10 +175,22 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    both were at the net, split, or both back. Tips are simple rules on those
    numbers (for example, a team that is split a lot is open through the
    middle) and appear once there are at least 5 points.
+
+   Per player and kind of shot, the **success rate** is the share kept in
+   play (the other team had to play it back) or won outright, among shots
+   whose outcome is known. With 5 or more such shots a kind is rated
+   strong (90% or more), weak (under 75%) or solid, and each player's
+   weakest kind becomes a tip with one thing to try.
 15. **Player highlights.** Each player's winners, smashes, bandejas and long
    points their team won (8+ shots, 3+ of them theirs) are ranked, overlaps
-   dropped, and the best 10 cut into `players/P#.mp4`.
-16. **Coach's summary** (optional). With the `coach` extra installed and
+   dropped, and the best 10 cut into `players/P#.mp4`. Every point the
+   player finished with a winner (from 8 s before their shot to 3 s after)
+   is also joined into `players/P#_winners.mp4`.
+16. **Shorts**: the 5 best points, and each player's best winner, as
+   vertical 9:16 clips of at most 59 s. A camera behind the court films in
+   landscape, so instead of cropping players off, the frame is cut to the
+   court's width and laid over a blurred copy of itself.
+17. **Coach's summary** (optional). With the `coach` extra installed and
    `ANTHROPIC_API_KEY` set, the report's numbers (no video, no names, players
    as P1-P4) are sent to Claude (`report.ai_model`, Claude Opus 5.5 by
    default) for a short written summary. Without a key this step is skipped.
@@ -220,5 +240,6 @@ so they need neither a GPU nor real footage. Clip tests need FFmpeg.
   the ball unseen at a hit, the team is a guess from the order of play
   (counted from the nearest hit where the ball was seen), so a missed hit
   sound flips the guess until the ball is seen again. Shot
-  kinds and the reach and lob thresholds (`shots` settings) need tuning on
-  real matches.
+  kinds and the reach, lob and pace thresholds (`shots` settings) need
+  tuning on real matches; success rates are only as good as the endings
+  behind them.

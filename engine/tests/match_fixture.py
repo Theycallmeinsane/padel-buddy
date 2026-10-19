@@ -35,7 +35,7 @@ POINT0 = [
     (5.5, (7.2, 7.5, 2.7), "P2", "smash"),
     (6.6, (3.2, 18.0, 2.6), "P3", "bandeja"),
     (7.8, (3.3, 2.0, 1.0), "P1", "lob"),
-    (10.0, (3.3, 18.0, 1.0), "P3", "groundstroke"),
+    (10.0, (3.3, 18.0, 1.0), "P3", "flat"),  # 14 m to its bounce in 0.8 s
 ]
 BOUNCES = [
     (3.6, (2.0, 17.5)),  # P2's volley lands deep, P3 plays it after the bounce

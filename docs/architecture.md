@@ -36,7 +36,8 @@ them one by one.
 | `clips` | `run_clips(...)`: cuts clips, thumbnails and the highlight reel with FFmpeg |
 | `ball` | `run_ball(...)`: ball candidates from motion, flights and bounces during points |
 | `shots` | `run_shots(...)`: who hit each shot and its kind, and how each point ended |
-| `report` | `run_report(...)`: team and player numbers, tips, each player's moments and reel |
+| `report` | `run_report(...)`: team and player numbers, success rates per shot, tips, each player's moments, reels and winners reel |
+| `shorts` | Vertical 9:16 clips of single points for phones, keeping the whole court in view |
 | `coach` | Optional written summary of the report's numbers from the Claude API |
 | `schemas` | Pydantic output models, the contract the API will serve |
 

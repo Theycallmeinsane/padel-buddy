@@ -318,7 +318,14 @@ def _fake_report_runner(video, run_dir, calibration, config, on_progress):
     summary = ShotsSummary(engine_version="test", shots=shots, points=points, outputs={})
     (run_dir / "shots.json").write_text(summary.model_dump_json())
     report = build_report(summary, overlay, mf.clips())
+    from padel_engine.schemas import Short
+
     report.players[2].reel = "players/P3.mp4"
+    report.players[2].winners_reel = "players/P3_winners.mp4"
+    report.shorts = [
+        Short(file="shorts/point_001.mp4", rally=0, start_s=0, end_s=12, title="Point 1"),
+        Short(file="shorts/P3_winner.mp4", rally=0, start_s=2, end_s=13, title="P3's winner", player="P3"),
+    ]
     (run_dir / "report.json").write_text(report.model_dump_json())
 
 
@@ -338,6 +345,8 @@ def test_players_are_named_and_found_across_matches(client, settings, tmp_path):
 
     p3 = client.get(f"/matches/{m['id']}/players/P3").json()
     assert (p3["name"], p3["team"], p3["reel"]) == ("Maya", "B", "players/P3.mp4")
+    assert p3["winners_reel"] == "players/P3_winners.mp4"
+    assert [x["file"] for x in p3["shorts"]] == ["shorts/P3_winner.mp4"]
     assert p3["report"]["winners"] == 1 and {s["player"] for s in p3["shots"]} == {"P3"}
     assert client.get(f"/matches/{m['id']}/players/P9").status_code == 404
 

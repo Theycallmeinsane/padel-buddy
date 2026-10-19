@@ -449,6 +449,8 @@ def _player_out(match: Match, player: str, run: Path) -> PlayerOut:
         report=mine,
         shots=[s for s in shots if s["player"] == player],
         reel=mine.get("reel") if mine else None,
+        winners_reel=mine.get("winners_reel") if mine else None,
+        shorts=[x for x in (report or {}).get("shorts", []) if x.get("player") == player],
     )
 
 

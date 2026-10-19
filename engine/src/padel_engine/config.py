@@ -140,6 +140,9 @@ class ClipsConfig(BaseModel):
     condensed: bool = True
     condensed_pad_s: float = Field(2.0, ge=0, description="Kept before and after each point.")
     condensed_height: int = Field(720, ge=144, description="The condensed match is long, so it is encoded smaller.")
+    point_clips: bool = Field(
+        True, description="Keep every point as its own clip (points/point_001.mp4 ...), at the condensed size."
+    )
 
     # Encoding
     video_crf: int = Field(23, ge=0, le=51, description="x264 quality; lower is better and bigger.")
@@ -190,6 +193,15 @@ class ShotsConfig(BaseModel):
     lob_min_depth_m: float = Field(
         6.95, ge=0, description="How far past the net a lob lands: by default behind the service line."
     )
+    flat_min_speed_mps: float = Field(
+        12.0, gt=0, description="A groundstroke this fast (court metres to its bounce per second in the air) is flat."
+    )
+    vibora_min_speed_mps: float = Field(
+        15.0, gt=0, description="An overhead from the back this fast is a vibora; slower ones are bandejas."
+    )
+    smash_min_speed_mps: float = Field(
+        22.0, gt=0, description="An overhead from the back this fast is a smash (at the net every overhead is)."
+    )
 
 
 class ReportConfig(BaseModel):
@@ -204,6 +216,16 @@ class ReportConfig(BaseModel):
     player_reels: bool = Field(True, description="Cut a highlight reel of each player's best moments.")
     player_moments: int = Field(10, ge=1, description="Most moments in a player's highlights.")
     player_reel_height: int = Field(720, gt=0)
+    winner_reels: bool = Field(True, description="Cut every winner each player hit into one reel per player.")
+    rating_min_shots: int = Field(
+        5, ge=1, description="A shot kind needs this many shots with a known outcome before it is rated."
+    )
+    weak_below: float = Field(0.75, ge=0, le=1, description="A shot kind kept in play less often than this is weak.")
+    strong_from: float = Field(0.9, ge=0, le=1, description="A shot kind kept in play at least this often is strong.")
+    shorts: int = Field(5, ge=0, description="Vertical shorts of the best points, for phones; 0 for none.")
+    player_shorts: bool = Field(True, description="Also a vertical short of each player's best winner.")
+    short_height: int = Field(1280, ge=320, description="Shorts are 9:16 at this height.")
+    short_max_s: float = Field(59.0, gt=0, description="Shorts are cut to at most this long.")
 
 
 class OutputConfig(BaseModel):

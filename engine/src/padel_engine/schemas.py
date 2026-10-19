@@ -49,6 +49,7 @@ class RallyInfo(BaseModel):
     peak_excess_db: float  # loudest instant, dB above the match's typical shot
     movement_mps: float | None  # mean player speed, when tracking ran first
     score: float  # 0..1 within this match
+    clip: str | None = None  # this point on its own (points/point_001.mp4), relative path
 
 
 class MomentInfo(BaseModel):
@@ -103,12 +104,15 @@ class ShotInfo(BaseModel):
     number: int  # 1 for the serve
     player: str | None  # None when only the team could be told
     team: str | None
-    kind: str  # serve, return, volley, smash, bandeja, lob, groundstroke
+    kind: str  # serve, return, volley, smash, vibora, bandeja, lob, flat, groundstroke, unknown
     zone: str | None  # hitter's depth zone: net / mid / back
     court_x: float | None  # hitter's position, metres
     court_y: float | None
     # "ball": the ball was seen at the hitter; "turn": inferred from whose turn it was
     by: str
+    speed_mps: float | None = None  # court metres to the next bounce per second in the air, when seen
+    # in_play: the other team played it back; winner / error: it ended the point; None: not known
+    outcome: str | None = None
 
 
 class PointInfo(BaseModel):
@@ -144,6 +148,19 @@ class PlayerMoment(BaseModel):
     score: float
 
 
+class ShotStat(BaseModel):
+    """How one kind of shot went for a player."""
+
+    kind: str
+    shots: int
+    known: int  # shots whose outcome is known
+    in_play: int  # played back by the other team
+    winners: int
+    errors: int
+    success: float | None  # (in play + winners) / known; None when nothing is known
+    rating: str | None  # strong / solid / weak, once there are enough known shots
+
+
 class PlayerReport(BaseModel):
     player: str
     team: str
@@ -159,6 +176,11 @@ class PlayerReport(BaseModel):
     side_share: dict[str, float]
     highlights: list[PlayerMoment] = []
     reel: str | None = None  # the player's own highlight reel, relative path
+    shot_stats: list[ShotStat] = []  # per kind of shot, most played first
+    strengths: list[str] = []  # shot kinds rated strong, best first
+    weaknesses: list[str] = []  # shot kinds rated weak, weakest first
+    winning_shots: list[PlayerMoment] = []  # every point they finished with a winner
+    winners_reel: str | None = None  # those points joined, relative path
 
 
 class TeamReport(BaseModel):
@@ -178,6 +200,17 @@ class Tip(BaseModel):
     text: str
 
 
+class Short(BaseModel):
+    """A vertical (9:16) clip of one point, for phones and sharing."""
+
+    file: str  # relative path
+    rally: int
+    start_s: float
+    end_s: float
+    title: str  # e.g. "Point 12" or "P3's winner"
+    player: str | None = None  # set for a player's own short
+
+
 class MatchReport(BaseModel):
     engine_version: str
     duration_s: float
@@ -191,4 +224,5 @@ class MatchReport(BaseModel):
     players: list[PlayerReport]
     tips: list[Tip]
     coach_summary: str | None = None  # written by Claude when enabled
+    shorts: list[Short] = []
     outputs: dict[str, str]

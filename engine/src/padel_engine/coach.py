@@ -17,8 +17,9 @@ from .schemas import MatchReport
 log = logging.getLogger(__name__)
 
 SYSTEM = """You are a padel coach writing a short summary of one match for the four amateur players in it.
-You get the match's numbers as JSON: points, shots by kind, winners and errors, time at the net, team
-formation (both at the net, split, both back), movement during points, and rule-based tips.
+You get the match's numbers as JSON: points, shots by kind, winners and errors, each player's success rate
+per kind of shot (kept in play or won outright, rated strong, solid or weak once there are enough), time at
+the net, team formation (both at the net, split, both back), movement during points, and rule-based tips.
 
 Write 120 to 200 words of plain prose, no headings or bullet points. Start with how the match went, then
 give each team one or two concrete things to work on, grounded in the numbers. Call players P1 to P4.
@@ -35,10 +36,11 @@ def summary(report: MatchReport, model: str) -> str | None:
         log.warning("ANTHROPIC_API_KEY is set but the anthropic package isn't installed; skipping the summary")
         return None
 
-    numbers = report.model_dump(exclude={"coach_summary", "outputs", "engine_version"})
+    numbers = report.model_dump(exclude={"coach_summary", "outputs", "engine_version", "shorts"})
     for p in numbers["players"]:
         p.pop("highlights", None)
-        p.pop("reel", None)
+        for key in ("reel", "winning_shots", "winners_reel"):
+            p.pop(key, None)
     client = anthropic.Anthropic()
     try:
         response = client.beta.messages.create(
