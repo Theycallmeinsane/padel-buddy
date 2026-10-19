@@ -87,6 +87,9 @@ class ScriptedTracker:
     - ByteTrack-style ids are re-numbered every few seconds
     - a spectator outside the court is always detected
     - optionally, more spectators and spells where a player is not detected
+    - optionally, a missed player's id handed to someone else some time into
+      their absence, as ByteTrack does when a hidden player's predicted box
+      drifts onto whoever is in front: ``handover={"A1": ("A2", 1.0)}``
     """
 
     def __init__(
@@ -98,28 +101,40 @@ class ScriptedTracker:
         seed: int = 0,
         spectators: tuple = ((11.8, 6.0),),
         missed: dict[str, tuple[float, float]] | None = None,
+        handover: dict[str, tuple[str, float]] | None = None,
     ):
         self.cam, self.gt, self.stride, self.fps = cam, gt, stride, fps
-        self.spectators, self.missed = spectators, missed or {}
+        self.spectators, self.missed, self.handover = spectators, missed or {}, handover or {}
         self.rng = np.random.default_rng(seed)
         self.calls = 0
+        self.last_id: dict[str, int] = {}
         self.truth: list[dict[int, str]] = []  # per call: detection index -> person
 
     def update(self, frame: np.ndarray) -> list[Detection]:
         i = self.calls * self.stride
         self.calls += 1
-        epoch = int(i / self.fps / 3.0)  # ids change every 3 s
+        t = i / self.fps
+        epoch = int(t / 3.0)  # ids change every 3 s
+        hidden = {p for p, (start, end) in self.missed.items() if start <= t < end}
         dets, truth = [], {}
         for k, (pid, xy) in enumerate(self.gt.items()):
             if self.rng.random() < 0.08:
                 continue
-            start, end = self.missed.get(pid, (np.inf, np.inf))
-            if start <= i / self.fps < end:
+            if pid in hidden:
                 continue
+            givers = [
+                g for g in hidden
+                if g in self.handover and self.handover[g][0] == pid
+                and t >= self.missed[g][0] + self.handover[g][1] and g in self.last_id
+            ]
+            if givers:
+                track_id = self.last_id[givers[0]]
+            else:
+                track_id = self.last_id[pid] = 100 * epoch + k
             x1, y1, x2, y2 = person_bbox(self.cam, xy[i])
             j = self.rng.normal(0, 2.0, 4)
             truth[len(dets)] = pid
-            dets.append(Detection((x1 + j[0], y1 + j[1], x2 + j[2], y2 + j[3]), 0.8, 100 * epoch + k))
+            dets.append(Detection((x1 + j[0], y1 + j[1], x2 + j[2], y2 + j[3]), 0.8, track_id))
         for k, xy in enumerate(self.spectators):
             dets.append(Detection(person_bbox(self.cam, xy), 0.7, 999 - k))
         self.truth.append(truth)

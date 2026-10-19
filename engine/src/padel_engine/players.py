@@ -13,10 +13,19 @@ and then follow their player through side switches and changeovers.
 People watching stand just outside the glass, by the net posts and the side
 fences, so only someone inside the lines can become a player or replace a
 lost one, and a player followed outside the lines for long is let go.
+
+A player who vanishes (off frame, hidden behind someone, missed by the
+detector) keeps their number and nobody else takes it: whoever was seen a
+moment ago wins over them, and nobody is moved onto someone who clearly looks
+different unless the tracker says it is still the same person. After the
+match, a repair pass cuts each slot's track wherever it broke and gives every
+piece to the player whose shirt it matches, so a mix-up the live pass made is
+undone when the player returns.
 """
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 
 import cv2
@@ -51,6 +60,7 @@ class _Slot:
     appearance: np.ndarray | None = None
     outside_since: float | None = None
     released: bool = False
+    segment: int | None = None  # index into PlayerAssigner.segments
 
     @property
     def initialised(self) -> bool:
@@ -58,12 +68,43 @@ class _Slot:
 
 
 @dataclass
+class Segment:
+    """A stretch of one slot's track with no long gap or jump: most likely one person.
+
+    Colours are kept as a running sum over clear views, so a two-hour match
+    costs a few hundred bytes per segment, not one histogram per frame.
+    """
+
+    player_id: str  # the live pass's label
+    first: int  # first and last analysed frame (assign call) it covers
+    last: int = -1
+    frames: int = 0
+    clear: int = 0  # frames whose colours were seen clearly
+    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(_HIST_BINS))
+
+    def add(self, frame: int, appearance: np.ndarray | None) -> None:
+        self.last = frame
+        self.frames += 1
+        if appearance is not None:
+            self.colour_sum += appearance
+            self.clear += 1
+
+    @property
+    def colour(self) -> np.ndarray | None:
+        return (self.colour_sum / self.clear).astype(np.float32) if self.clear else None
+
+
+@dataclass
 class PlayerAssigner:
     cfg: TrackingConfig
     slots: dict[str, _Slot] = field(init=False)
+    segments: list[Segment] = field(init=False)
+    frames: int = field(init=False)
 
     def __post_init__(self) -> None:
         self.slots = {pid: _Slot(pid) for pid in PLAYER_IDS}
+        self.segments = []
+        self.frames = 0
 
     def assign(self, time_s: float, candidates: list[Candidate]) -> dict[str, int]:
         """Match candidates at ``time_s`` to players. Returns player id -> candidate index."""
@@ -98,7 +139,14 @@ class PlayerAssigner:
         learn = {i for i, ok in zip(distinct, clear) if ok and i in in_lines}
         for pid, idx in result.items():
             self._update(self.slots[pid], candidates[idx], time_s, idx in in_lines, idx in learn)
+        self.frames += 1
         return result
+
+    def identities(self) -> list[str]:
+        """Who each of ``segments`` is: repaired by colour, or as tracked live if the repair is off."""
+        if not self.cfg.repair_identities:
+            return [s.player_id for s in self.segments]
+        return repair_identities(self.segments, self.cfg)
 
     # -- internals --------------------------------------------------------
 
@@ -109,11 +157,19 @@ class PlayerAssigner:
         side, end = self.cfg.side_tolerance_m, self.cfg.end_tolerance_m
         return -side <= xy[0] <= court.WIDTH + side and -end <= xy[1] <= court.LENGTH + end
 
-    def _reacquire_limit(self, slot: _Slot, time_s: float) -> float:
-        """Largest colour distance a lost player accepts; it relaxes the longer they stay lost."""
+    def _appearance_limit(self, slot: _Slot, time_s: float, same_track: bool) -> float:
+        """Largest colour distance a player accepts.
+
+        Someone who clearly looks different is refused, unless the player was
+        seen a moment ago and the tracker says it is still them (colours get
+        garbled when someone passes in front). The limit relaxes the longer a
+        player stays lost, in case their look changed.
+        """
         cfg = self.cfg
-        lost_for = time_s - slot.last_time - cfg.reacquire_after_s
-        relax = min(max(lost_for / cfg.reacquire_relax_s, 0.0), 1.0)
+        unseen = time_s - slot.last_time
+        if same_track and unseen <= cfg.stale_after_s and not slot.released:
+            return np.inf
+        relax = min(max((unseen - cfg.reacquire_after_s) / cfg.reacquire_relax_s, 0.0), 1.0)
         return cfg.reacquire_max_appearance + (1.0 - cfg.reacquire_max_appearance) * relax
 
     def _match(self, slots: list[_Slot], cands: list[Candidate], time_s: float) -> dict[str, int]:
@@ -129,24 +185,29 @@ class PlayerAssigner:
         cfg = self.cfg
         dist = float(np.linalg.norm(cand.court_xy - slot.xy))
         app = appearance_distance(slot.appearance, cand.appearance)
+        same_track = slot.track_id is not None and slot.track_id == cand.detection.track_id
+        # A player missed for a frame is better left without a box than moved
+        # onto someone else who happens to be close, e.g. while two cross.
+        if app > self._appearance_limit(slot, time_s, same_track):
+            return _INFEASIBLE
         if self._lost(slot, time_s):
             # Position says little after a long absence; lean on appearance.
-            if app > self._reacquire_limit(slot, time_s):
-                return _INFEASIBLE
             pos = 0.5 * min(dist / court.WIDTH, 1.0)
         else:
-            gate = cfg.base_gate_m + cfg.max_speed_mps * (time_s - slot.last_time)
-            if dist > gate:
+            unseen = time_s - slot.last_time
+            if dist > cfg.base_gate_m + cfg.max_speed_mps * unseen:
                 return _INFEASIBLE
             # Off court, only follow whom the detector says is the same person:
             # a missed player is not swapped for someone watching nearby.
-            if not self._in_lines(cand.court_xy) and (
-                slot.track_id is None or cand.detection.track_id != slot.track_id
-            ):
+            if not self._in_lines(cand.court_xy) and not same_track:
                 return _INFEASIBLE
-            pos = dist / gate
+            # Metres, not a share of the gate: the gate widens while a player is
+            # unseen, which would let them take someone seen a moment ago.
+            pos = cfg.position_cost_per_m * dist + cfg.stale_cost_per_s * unseen
         cost = pos + cfg.appearance_weight * app
-        if slot.track_id is not None and slot.track_id == cand.detection.track_id:
+        # The tracker often moves a hidden player's id onto whoever is in front
+        # of them, so the id only counts when the colours do not disagree.
+        if same_track and app <= cfg.reacquire_max_appearance:
             cost -= cfg.track_id_bonus
         return cost
 
@@ -169,6 +230,19 @@ class PlayerAssigner:
                 result[pid] = i
 
     def _update(self, slot: _Slot, cand: Candidate, time_s: float, inside: bool, learn: bool) -> None:
+        cfg = self.cfg
+        gap = time_s - slot.last_time
+        if (
+            slot.segment is None
+            or slot.released
+            or gap > cfg.segment_gap_s
+            or np.linalg.norm(cand.court_xy - slot.xy) > cfg.base_gate_m + cfg.max_speed_mps * gap
+        ):
+            # After a gap or a jump this may be someone else; the repair decides.
+            slot.segment = len(self.segments)
+            self.segments.append(Segment(slot.player_id, self.frames))
+        self.segments[slot.segment].add(self.frames, cand.appearance if learn else None)
+
         slot.xy = cand.court_xy.copy()
         slot.last_time = time_s
         slot.track_id = cand.detection.track_id
@@ -183,6 +257,103 @@ class PlayerAssigner:
             else:
                 m = self.cfg.appearance_momentum
                 slot.appearance = (1 - m) * slot.appearance + m * cand.appearance
+
+
+_SLOT = {pid: k for k, pid in enumerate(PLAYER_IDS)}
+# Which player sits on each of the four slots (-1: none running), for every
+# arrangement that uses no player twice: 209 of them.
+_STATES = [
+    s
+    for s in itertools.product(range(-1, 4), repeat=4)
+    if len([v for v in s if v >= 0]) == len({v for v in s if v >= 0})
+]
+_STATE_INDEX = {s: i for i, s in enumerate(_STATES)}
+_REPAIR_ROUNDS = 5
+
+
+def repair_identities(segments: list[Segment], cfg: TrackingConfig) -> list[str]:
+    """Give every segment to the player whose colours it matches.
+
+    Each player's reference colours start from their earliest long, clear
+    segment, so a mix-up later in the match cannot redefine who they are,
+    and are then rebuilt from every long segment given to them. A segment
+    keeps its live label unless its colours clearly say otherwise, and two
+    segments running at the same time never share a player.
+    """
+    if not segments:
+        return []
+    long = [i for i, s in enumerate(segments) if s.clear >= cfg.prototype_min_s * cfg.process_fps]
+    labels = [_SLOT[s.player_id] for s in segments]
+    protos: dict[int, np.ndarray] = {}
+    for i in sorted(long, key=lambda i: segments[i].first):
+        protos.setdefault(labels[i], segments[i].colour)
+    for _ in range(_REPAIR_ROUNDS):
+        new = _best_labels(segments, _label_costs(segments, protos, cfg))
+        if new == labels:
+            break
+        labels = new
+        protos = {}
+        for k in range(len(PLAYER_IDS)):
+            mine = [segments[i] for i in long if labels[i] == k]
+            if mine:
+                protos[k] = (sum(s.colour_sum for s in mine) / sum(s.clear for s in mine)).astype(np.float32)
+    return [PLAYER_IDS[k] for k in labels]
+
+
+def _label_costs(segments: list[Segment], protos: dict[int, np.ndarray], cfg: TrackingConfig) -> np.ndarray:
+    """Cost of calling each segment each player: colour distance per clear frame, plus a fee for a new label."""
+    cost = np.zeros((len(segments), len(PLAYER_IDS)))
+    min_clear = cfg.repair_min_clear_s * cfg.process_fps
+    for i, s in enumerate(segments):
+        own = _SLOT[s.player_id]
+        if s.clear and s.clear >= min_clear:
+            colour = s.colour
+            dist = {k: appearance_distance(colour, p) for k, p in protos.items()}
+            # A player with no reference colours is no evidence either way.
+            neutral = dist.get(own, 0.5)
+            cost[i] = [s.clear * dist.get(k, neutral) for k in range(len(PLAYER_IDS))]
+        cost[i] += s.frames * cfg.repair_switch_cost
+        cost[i, own] -= s.frames * cfg.repair_switch_cost
+    return cost
+
+
+def _best_labels(segments: list[Segment], cost: np.ndarray) -> list[int]:
+    """Cheapest player for every segment, never the same one on two segments at once.
+
+    Sweeps through time keeping, for each way the players can sit on the
+    slots running at that moment (at most 24), the cheapest labelling of
+    everything so far. Exact, and linear in the number of segments.
+    """
+    slot = [_SLOT[s.player_id] for s in segments]
+    costs = cost.tolist()
+    # A segment covers frames first..last; at a shared frame, ends come first.
+    events = sorted(
+        [(s.first, 1, i) for i, s in enumerate(segments)] + [(s.last + 1, 0, i) for i, s in enumerate(segments)]
+    )
+    best = {_STATE_INDEX[(-1,) * 4]: 0.0}
+    back: list[bytearray] = []  # per event: each state's state before it
+    for _, starts, i in events:
+        j = slot[i]
+        nxt: dict[int, float] = {}
+        prev = bytearray(b"\xff") * len(_STATES)
+        for s, c in best.items():
+            state = _STATES[s]
+            options = [k for k in range(4) if k not in state] if starts else [-1]
+            for k in options:
+                t = _STATE_INDEX[state[:j] + (k,) + state[j + 1 :]]
+                c2 = c + costs[i][k] if starts else c
+                if c2 < nxt.get(t, np.inf):
+                    nxt[t], prev[t] = c2, s
+        best = nxt
+        back.append(prev)
+
+    labels = [0] * len(segments)
+    s = min(best, key=best.get)
+    for (_, starts, i), prev in zip(reversed(events), reversed(back)):
+        if starts:
+            labels[i] = _STATES[s][slot[i]]
+        s = prev[s]
+    return labels
 
 
 def _area(b: tuple[float, float, float, float]) -> float:

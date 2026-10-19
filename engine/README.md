@@ -107,10 +107,23 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    tracker's id. People watching stand just outside the glass, by the net
    posts and the side fences, so only someone inside the lines can become a
    player, a player is followed off court only while the tracker keeps the
-   same id, and one followed outside the lines for 4 s is let go. A player
-   missing for a couple of seconds is re-found by shirt colour, and only by
-   someone whose colours are close; that limit relaxes over 30 s in case
-   their look changed.
+   same id, and one followed outside the lines for 4 s is let go.
+   When a player disappears (out of frame, behind another player, or just
+   missed by the detector), nobody else's number changes and their own
+   number waits for them; they simply have no box while they are gone. A
+   player seen a moment ago always wins over one who has vanished, nobody is
+   moved onto someone who clearly looks different unless the tracker says it
+   is still the same person, and the tracker's id only counts when the
+   colours agree, because it often hands a hidden player's id to whoever is
+   in front of them. A player missing for a couple of seconds is re-found by
+   shirt colour, and only by someone whose colours are close; that limit
+   relaxes over 30 s in case their look changed. Once the whole match is
+   tracked, a repair pass cuts each player's track wherever they vanished
+   for more than half a second, compares every piece's shirt colours with
+   each player's own (taken from long, clear views, starting with the first
+   ones), and gives any piece that belongs to someone else back to them,
+   never one number to two people at once. So if two players did get mixed
+   up live, it is put right when they come back.
 4. **Analytics** smooths positions with a Kalman smoother that knows a
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones

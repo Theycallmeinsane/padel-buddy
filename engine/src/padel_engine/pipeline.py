@@ -59,62 +59,68 @@ def run_tracking(
 
     tracker = tracker or YoloPersonTracker(cfg.detector)
     assigner = PlayerAssigner(cfg.tracking)
-    minimap = render.TopDown(px_per_m=24)
     outputs: dict[str, str] = {"tracks": "tracks.csv", "summary": "summary.json"}
 
-    writer = None
-    preview_path = out / "preview.mp4"
+    preview = cfg.output.preview_video
+    share = 0.8 if preview else 1.0  # of the progress bar; the preview is drawn in a second pass
     rows: list[dict] = []
+    segment_of: list[int] = []  # per row, the assigner's segment it came from
+    others: list[list] = []  # per analysed frame, people who are not players (preview only)
     analysed = 0
 
+    for frame_idx, t, frame in iter_frames(video_path, stride):
+        if analysed == 0:
+            cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
+            outputs["calibration_check"] = "calibration_check.jpg"
+
+        detections = tracker.update(frame)
+        court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
+        candidates = [
+            Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
+        ]
+        assigned = assigner.assign(t, candidates)
+
+        for pid, i in sorted(assigned.items()):
+            c = candidates[i]
+            row = {
+                "frame": frame_idx,
+                "time_s": round(t, 3),
+                "player": pid,
+                "team": TEAM_OF[pid],
+                "track_id": c.detection.track_id if c.detection.track_id is not None else "",
+                "confidence": round(c.detection.confidence, 3),
+                **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
+                "court_x": round(float(c.court_xy[0]), 3),
+                "court_y": round(float(c.court_xy[1]), 3),
+            }
+            rows.append(row)
+            segment_of.append(assigner.slots[pid].segment)
+        if preview:
+            taken = set(assigned.values())
+            others.append([d.bbox for j, d in enumerate(detections) if j not in taken])
+
+        analysed += 1
+        if on_progress and analysed % 25 == 0:
+            on_progress(min(share * analysed / total, 0.99))
+
+    # Who is who is only settled once the repair has seen the whole match, so
+    # every output is written from here on.
+    identities = assigner.identities()
+    for row, segment in zip(rows, segment_of):
+        row["player"] = identities[segment]
+        row["team"] = TEAM_OF[row["player"]]
+    rows.sort(key=lambda r: (r["frame"], r["player"]))
     with open(out / "tracks.csv", "w", newline="") as fh:
         csv_out = csv.DictWriter(fh, fieldnames=TRACK_COLUMNS)
         csv_out.writeheader()
+        csv_out.writerows(rows)
 
-        for frame_idx, t, frame in iter_frames(video_path, stride):
-            if analysed == 0:
-                cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
-                outputs["calibration_check"] = "calibration_check.jpg"
-                if cfg.output.preview_video:
-                    writer = cv2.VideoWriter(
-                        str(preview_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (frame.shape[1], frame.shape[0])
-                    )
-
-            detections = tracker.update(frame)
-            court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
-            candidates = [
-                Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
-            ]
-            assigned = assigner.assign(t, candidates)
-
-            for pid, i in sorted(assigned.items()):
-                c = candidates[i]
-                row = {
-                    "frame": frame_idx,
-                    "time_s": round(t, 3),
-                    "player": pid,
-                    "team": TEAM_OF[pid],
-                    "track_id": c.detection.track_id if c.detection.track_id is not None else "",
-                    "confidence": round(c.detection.confidence, 3),
-                    **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
-                    "court_x": round(float(c.court_xy[0]), 3),
-                    "court_y": round(float(c.court_xy[1]), 3),
-                }
-                csv_out.writerow(row)
-                rows.append(row)
-
-            if writer is not None:
-                players = {pid: (candidates[i].detection.bbox, candidates[i].court_xy) for pid, i in assigned.items()}
-                taken = set(assigned.values())
-                others = [d.bbox for j, d in enumerate(detections) if j not in taken]
-                writer.write(render.annotate_frame(frame, players, others, minimap, t))
-
-            analysed += 1
-            if on_progress and analysed % 25 == 0:
-                on_progress(min(analysed / total, 0.99))
-
-    if writer is not None:
-        writer.release()
+    if preview and analysed:
+        preview_path = out / "preview.mp4"
+        _write_preview(
+            video_path, stride, fps, rows, others, preview_path,
+            on_progress and (lambda p: on_progress(min(share + (1 - share) * p, 0.99))),
+        )
         make_browser_friendly(preview_path)
         outputs["preview"] = "preview.mp4"
 
@@ -140,6 +146,38 @@ def run_tracking(
     if on_progress:
         on_progress(1.0)
     return summary
+
+
+def _write_preview(
+    video_path: str | Path,
+    stride: int,
+    fps: float,
+    rows: list[dict],
+    others: list[list],
+    path: Path,
+    on_progress: ProgressFn | None,
+) -> None:
+    """Boxes and a minimap burnt into the video, drawn after the repair so the numbers match tracks.csv."""
+    minimap = render.TopDown(px_per_m=24)
+    writer = None
+    j = 0  # rows are in frame order
+    for k, (frame_idx, t, frame) in enumerate(iter_frames(video_path, stride)):
+        if k >= len(others):
+            break
+        if writer is None:
+            writer = cv2.VideoWriter(
+                str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (frame.shape[1], frame.shape[0])
+            )
+        players = {}
+        while j < len(rows) and rows[j]["frame"] == frame_idx:
+            r = rows[j]
+            players[r["player"]] = ((r["x1"], r["y1"], r["x2"], r["y2"]), np.array([r["court_x"], r["court_y"]]))
+            j += 1
+        writer.write(render.annotate_frame(frame, players, others[k], minimap, t))
+        if on_progress and (k + 1) % 25 == 0:
+            on_progress((k + 1) / len(others))
+    if writer is not None:
+        writer.release()
 
 
 def _player_stats(
