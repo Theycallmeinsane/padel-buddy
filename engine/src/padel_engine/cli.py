@@ -64,10 +64,10 @@ def track(
     fps: Optional[float] = typer.Option(None, help="Analysis frames per second (default 10)."),
     model: Optional[str] = typer.Option(None, help="YOLO weights, e.g. yolo11m.pt"),
     device: Optional[str] = typer.Option(None, help="cpu, cuda:0, mps"),
-    preview: bool = typer.Option(True, help="Write an annotated preview video."),
+    preview: bool = typer.Option(False, help="Also write a video with boxes and a minimap burnt in."),
     config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
 ) -> None:
-    """Find and follow the four players; write tracks, stats, heatmaps and a preview."""
+    """Find and follow the four players; write tracks, stats, heatmaps and the viewer overlay."""
     from .pipeline import run_tracking
 
     cfg = _load_config(config)

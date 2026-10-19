@@ -62,7 +62,7 @@ Each run folder contains:
 | `tracks.csv` | One row per player per analysed frame: box, track id, court x/y in metres |
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
-| `preview.mp4` | The video with player boxes and a live top-down minimap |
+| `preview.mp4` | With `track --preview` only: the video with player boxes and a minimap burnt in. The app's viewer draws the same live, so it is off by default |
 | `overlay.json` | Court lines in the image and every player's box and smoothed court position, for the app's viewer |
 | `ball.json` | How much of the points the ball was found in, flights and bounces |
 | `ball_track.json` | The ball's position in every frame it was found, and each bounce in court metres |
@@ -87,11 +87,16 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    off-centre camera is fine.
 2. **Detection** runs YOLO (person class) with ByteTrack every
    `1 / process_fps` seconds (10 fps by default).
-3. **Player assignment** projects each person's feet onto the court, drops
-   anyone outside the court (spectators, neighbouring courts), and keeps four
-   stable player slots by matching on court position (gated by a maximum
-   running speed), shirt colour, and the tracker's id. A player missing for a
-   couple of seconds is re-found by shirt colour.
+3. **Player assignment** projects each person's feet onto the court, merges
+   two boxes on one person, and keeps four stable player slots by matching on
+   court position (gated by a maximum running speed), shirt colour, and the
+   tracker's id. People watching stand just outside the glass, by the net
+   posts and the side fences, so only someone inside the lines can become a
+   player, a player is followed off court only while the tracker keeps the
+   same id, and one followed outside the lines for 4 s is let go. A player
+   missing for a couple of seconds is re-found by shirt colour, and only by
+   someone whose colours are close; that limit relaxes over 30 s in case
+   their look changed.
 4. **Analytics** smooths positions with a Kalman smoother that knows a
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones

@@ -86,10 +86,21 @@ class ScriptedTracker:
     - ~8% of detections are dropped
     - ByteTrack-style ids are re-numbered every few seconds
     - a spectator outside the court is always detected
+    - optionally, more spectators and spells where a player is not detected
     """
 
-    def __init__(self, cam: Camera, gt: dict[str, np.ndarray], stride: int, fps: float, seed: int = 0):
+    def __init__(
+        self,
+        cam: Camera,
+        gt: dict[str, np.ndarray],
+        stride: int,
+        fps: float,
+        seed: int = 0,
+        spectators: tuple = ((11.8, 6.0),),
+        missed: dict[str, tuple[float, float]] | None = None,
+    ):
         self.cam, self.gt, self.stride, self.fps = cam, gt, stride, fps
+        self.spectators, self.missed = spectators, missed or {}
         self.rng = np.random.default_rng(seed)
         self.calls = 0
         self.truth: list[dict[int, str]] = []  # per call: detection index -> person
@@ -102,12 +113,14 @@ class ScriptedTracker:
         for k, (pid, xy) in enumerate(self.gt.items()):
             if self.rng.random() < 0.08:
                 continue
+            start, end = self.missed.get(pid, (np.inf, np.inf))
+            if start <= i / self.fps < end:
+                continue
             x1, y1, x2, y2 = person_bbox(self.cam, xy[i])
             j = self.rng.normal(0, 2.0, 4)
             truth[len(dets)] = pid
             dets.append(Detection((x1 + j[0], y1 + j[1], x2 + j[2], y2 + j[3]), 0.8, 100 * epoch + k))
-        # Spectator standing outside the right wall.
-        x1, y1, x2, y2 = person_bbox(self.cam, (11.8, 6.0))
-        dets.append(Detection((x1, y1, x2, y2), 0.7, 999))
+        for k, xy in enumerate(self.spectators):
+            dets.append(Detection(person_bbox(self.cam, xy), 0.7, 999 - k))
         self.truth.append(truth)
         return dets

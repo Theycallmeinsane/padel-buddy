@@ -30,7 +30,19 @@ class TrackingConfig(BaseModel):
         10.0, gt=0, description="Frames per second analysed; the rest are skipped."
     )
     court_margin_m: float = Field(
-        0.75, ge=0, description="How far outside the court lines a person still counts as a player."
+        0.5, ge=0, description="How far outside the court lines a player already being followed is still followed."
+    )
+    side_tolerance_m: float = Field(
+        0.1,
+        ge=0,
+        description="How far past a side line someone still counts as inside the lines. Only people inside "
+        "the lines can become a player, so spectators by the net posts and side fences stay out.",
+    )
+    end_tolerance_m: float = Field(
+        0.5, ge=0, description="The same past the back walls, where foot positions are less precise."
+    )
+    outside_release_s: float = Field(
+        4.0, gt=0, description="A player followed outside the lines this long is let go and found again by appearance."
     )
     max_speed_mps: float = Field(
         8.0, gt=0, description="Fastest plausible player movement, used to gate matches."
@@ -39,9 +51,24 @@ class TrackingConfig(BaseModel):
     reacquire_after_s: float = Field(
         2.0, gt=0, description="A player unseen for this long is re-found by appearance alone."
     )
+    reacquire_max_appearance: float = Field(
+        0.55,
+        ge=0,
+        le=1,
+        description="Colour distance (0 same, 1 nothing alike) above which a lost player is not re-found.",
+    )
+    reacquire_relax_s: float = Field(
+        30.0,
+        gt=0,
+        description="Over this long the colour limit relaxes fully, so a player whose look changed is still found.",
+    )
+    duplicate_overlap: float = Field(
+        0.8, gt=0, le=1, description="Boxes overlapping this much of the smaller one, at similar size, are one person."
+    )
+    duplicate_area_ratio: float = Field(0.4, gt=0, le=1)
     appearance_weight: float = Field(0.5, ge=0)
     track_id_bonus: float = Field(0.3, ge=0)
-    appearance_momentum: float = Field(0.1, gt=0, le=1)
+    appearance_momentum: float = Field(0.05, gt=0, le=1)
 
 
 class AnalyticsConfig(BaseModel):
@@ -149,7 +176,7 @@ class BallConfig(BaseModel):
 
 
 class OutputConfig(BaseModel):
-    preview_video: bool = True
+    preview_video: bool = False  # the web viewer draws the same overlay live
     heatmaps: bool = True
 
 
