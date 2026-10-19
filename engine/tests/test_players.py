@@ -7,7 +7,14 @@ from padel_engine import court
 from padel_engine.calibration import Calibration
 from padel_engine.config import TrackingConfig
 from padel_engine.detection import Detection
-from padel_engine.players import Candidate, PlayerAssigner, appearance_of, distinct_people
+from padel_engine.players import (
+    Candidate,
+    PlayerAssigner,
+    Segment,
+    appearance_of,
+    distinct_people,
+    repair_identities,
+)
 from synthetic import H, W, Camera, ScriptedTracker, paths, render_frame
 
 FPS = 10.0
@@ -26,7 +33,27 @@ def colour(hue_bin):
     return hist
 
 
-def run(duration_s=30.0, seed=0, spectators=((11.8, 6.0),), missed=None):
+def kit(share):
+    """Teammates in similar kit: two shades mixed, ``share`` of the first."""
+    return (share * colour(0) + (1 - share) * colour(1)).astype(np.float32)
+
+
+def times(start, end):
+    """Frame times from ``start`` up to ``end`` at 10 fps."""
+    return [round(float(t), 1) for t in np.arange(start, end - 1e-9, 1 / FPS)]
+
+
+def play(assigner, frames):
+    """Feed (time, candidates) frames; each frame's {player: candidate index} after the repair."""
+    seen = []
+    for t, cands in frames:
+        out = assigner.assign(t, cands)
+        seen.append({assigner.slots[pid].segment: i for pid, i in out.items()})
+    ids = assigner.identities()
+    return [{ids[seg]: i for seg, i in frame.items()} for frame in seen]
+
+
+def run(duration_s=30.0, seed=0, spectators=((11.8, 6.0),), missed=None, handover=None):
     cam = Camera()
     calib = Calibration.from_points(
         {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
@@ -34,10 +61,11 @@ def run(duration_s=30.0, seed=0, spectators=((11.8, 6.0),), missed=None):
         (W, H),
     )
     gt = paths(duration_s, FPS)
-    tracker = ScriptedTracker(cam, gt, stride=1, fps=FPS, seed=seed, spectators=spectators, missed=missed)
+    tracker = ScriptedTracker(
+        cam, gt, stride=1, fps=FPS, seed=seed, spectators=spectators, missed=missed, handover=handover
+    )
     assigner = PlayerAssigner(TrackingConfig())
-    pairs = Counter()  # (true person, assigned player)
-    spectator_assigned = 0
+    seen = []  # per frame: (true person or None, segment)
     n = len(next(iter(gt.values())))
     for i in range(n):
         people = {p: xy[i] for p, xy in gt.items()} | {f"S{k}": np.array(xy) for k, xy in enumerate(spectators)}
@@ -47,11 +75,11 @@ def run(duration_s=30.0, seed=0, spectators=((11.8, 6.0),), missed=None):
         cands = [Candidate(d, p, appearance_of(frame, d.bbox)) for d, p in zip(dets, xy)]
         result = assigner.assign(i / FPS, cands)
         truth = tracker.truth[-1]
-        for pid, idx in result.items():
-            if idx in truth:
-                pairs[(truth[idx], pid)] += 1
-            else:
-                spectator_assigned += 1
+        seen.append([(truth.get(idx), assigner.slots[pid].segment) for pid, idx in result.items()])
+    # Count what the outputs would say: the labels after the repair.
+    ids = assigner.identities()
+    pairs = Counter((person, ids[seg]) for frame in seen for person, seg in frame if person is not None)
+    spectator_assigned = sum(person is None for frame in seen for person, _ in frame)
     return pairs, spectator_assigned
 
 
@@ -98,6 +126,74 @@ def test_missed_player_is_not_replaced_by_spectators_at_the_net_posts():
     assert b1["P3"] / sum(b1.values()) > 0.97, b1
     # Found again once detected: 22 of the 30 s, less the tracker's random drops.
     assert b1["P3"] > 0.85 * 22 * FPS, b1
+
+
+def test_a_hidden_player_s_id_handed_to_their_teammate_changes_no_numbers():
+    """A1 is missed for 4 s while the two cross; a second in, the tracker gives A1's id to A2."""
+    pairs, spectator_assigned = run(missed={"A1": (15.0, 19.0)}, handover={"A1": ("A2", 1.0)})
+    assert spectator_assigned == 0
+    for person, pid in [("A1", "P1"), ("A2", "P2"), ("B1", "P3"), ("B2", "P4")]:
+        counts = {p: c for (q, p), c in pairs.items() if q == person}
+        assert counts[pid] / sum(counts.values()) > 0.97, (person, counts)
+    a2 = {pid: c for (p, pid), c in pairs.items() if p == "A2"}
+    assert set(a2) == {"P2"}, a2  # not a single frame as anyone else
+    a1 = {pid: c for (p, pid), c in pairs.items() if p == "A1"}
+    assert a1["P1"] > 0.85 * 26 * FPS, a1  # back to P1 as soon as A1 is seen again
+
+
+def test_teammate_walking_into_a_vanished_player_s_spot_keeps_their_number():
+    """P1 vanishes for 3 s while P2, in similar kit, walks across P1's spot.
+
+    A second in, the tracker re-attaches P1's lost id to P2, as ByteTrack
+    does when a hidden player's predicted box drifts onto whoever is in front.
+    """
+    a1, a2, green, yellow = kit(0.7), kit(0.3), colour(6), colour(12)
+    far = lambda: [cand(2.0, 16.0, green, 3), cand(8.0, 16.0, yellow, 4)]  # noqa: E731
+    frames = [(t, [cand(3.0, 4.0, a1, 1), cand(6.0, 4.0, a2, 2), *far()]) for t in times(0, 4)]
+    frames += [(t, [cand(6.0 - 1.2 * (t - 4.0), 4.0, a2, 2 if t < 5 else 1), *far()]) for t in times(4, 7)]
+    frames += [(t, [cand(2.4, 4.0, a2, 1), cand(4.5, 6.5, a1, 5), *far()]) for t in times(7, 10)]
+    a = PlayerAssigner(TrackingConfig())
+    out = play(a, frames)
+    assert all(f == {"P1": 0, "P2": 1, "P3": 2, "P4": 3} for f in out[:40])
+    assert all(f == {"P2": 0, "P3": 1, "P4": 2} for f in out[40:70])  # nobody else becomes P1
+    assert all(f == {"P2": 0, "P1": 1, "P3": 2, "P4": 3} for f in out[70:])
+    # The live pass gets this right on its own; the repair has nothing to fix.
+    assert a.identities() == [s.player_id for s in a.segments]
+
+
+def test_teammates_back_in_each_other_s_places_get_their_own_numbers():
+    """Both near players leave the frame; the one in similar kit comes back first, where the other stood."""
+    a1, a2, green, yellow = kit(0.7), kit(0.3), colour(6), colour(12)
+    far = lambda: [cand(2.0, 16.0, green, 3), cand(8.0, 16.0, yellow, 4)]  # noqa: E731
+    frames = [(t, [cand(3.0, 4.0, a1, 1), cand(7.0, 4.0, a2, 2), *far()]) for t in times(0, 4)]
+    frames += [(t, far()) for t in times(4, 7)]
+    frames += [(t, [cand(3.0, 4.0, a2, 5), *far()]) for t in times(7, 8)]
+    frames += [(t, [cand(3.0, 4.0, a2, 5), cand(7.0, 4.0, a1, 6), *far()]) for t in times(8, 12)]
+    out = play(PlayerAssigner(TrackingConfig()), frames)
+    # Live, the empty P1 takes whoever turns up in P1's spot; the repair puts it right by colour.
+    assert all(f["P2"] == 0 and f["P3"] == 1 for f in out[70:80])
+    assert all(f == {"P1": 1, "P2": 0, "P3": 2, "P4": 3} for f in out[80:])
+
+
+def test_the_repair_never_gives_one_number_to_two_people_at_once():
+    rng = np.random.default_rng(1)
+    segments = []
+    for pid in ("P1", "P2", "P3", "P4"):
+        frame = int(rng.integers(0, 20))
+        while frame < 2000:
+            seg = Segment(pid, frame)
+            look = colour(4 * int(rng.integers(0, 4)))  # anyone's kit: lots of conflicts to settle
+            for f in range(frame, frame + int(rng.integers(5, 200))):
+                seg.add(f, look if rng.random() < 0.7 else None)
+            segments.append(seg)
+            frame = seg.last + int(rng.integers(1, 30))
+    segments.sort(key=lambda s: s.first)
+    labels = repair_identities(segments, TrackingConfig())
+    assert labels != [s.player_id for s in segments]
+    for i, s in enumerate(segments):
+        for j, o in enumerate(segments[:i]):
+            if s.first <= o.last and o.first <= s.last:
+                assert labels[i] != labels[j], (s, o)
 
 
 def test_lost_player_ignores_someone_who_looks_different():

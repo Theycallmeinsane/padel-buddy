@@ -7,10 +7,15 @@ When the ball wasn't seen, the hitter's team follows from whose turn it was,
 since shots alternate between the teams.
 
 A shot's kind comes from its place in the point (serve, return), where the
-ball was against the hitter (above their head: an overhead, a smash at the
-net or a bandeja further back), where the hitter stood (at the net: a volley)
-and where the ball went next (deep and long in the air: a lob). The rest are
-groundstrokes, including balls played off the walls.
+ball was against the hitter (above their head: an overhead), where the hitter
+stood (at the net: a volley), where the ball went next (deep and long in the
+air: a lob) and how fast it got to its bounce. An overhead at the net is a
+smash; from further back a fast one is a vibora (or a smash, faster still)
+and a slower one a bandeja. A fast, low groundstroke is a flat drive; the
+rest are groundstrokes, including balls played off the walls.
+
+Each shot's outcome is "in_play" when the other team played it back, or the
+point's ending (winner or error) when it was the last shot.
 
 A point ends with a winner when the last shot bounced in the other half and
 wasn't played back, and with an error when the ball was seen after it but
@@ -164,9 +169,11 @@ def find_shots(
         made = [
             _shot(i, h, mine, rally, players, ball, cfg) for i, h in enumerate(mine)
         ]
-        shots += made
         until = starts[k + 1] if k + 1 < len(starts) else rally.end_s + 3.0
-        points.append(_ending(rally, made, players, ball, net, until))
+        point = _ending(rally, made, players, ball, net, until)
+        _outcomes(made, point)
+        shots += made
+        points.append(point)
     return shots, points
 
 
@@ -217,13 +224,19 @@ def _shot(
     prev_t = hits[i - 1].time_s if i > 0 else rally.start_s - 1.0
     next_t = hits[i + 1].time_s if i + 1 < len(hits) else h.time_s + 4.0
 
+    speed = _flight_speed(h.time_s, next_t, p, side, ball) if p is not None and ball is not None else None
     kind = "unknown" if p is None else "groundstroke"
     if i == 0:
         kind = "serve"
     elif i == 1:
         kind = "return"
     elif p is not None and h.uv is not None and h.uv[1] < p.box[1] - 0.05 * (p.box[3] - p.box[1]):
-        kind = "smash" if zone == "net" else "bandeja"
+        if zone == "net" or (speed is not None and speed >= cfg.smash_min_speed_mps):
+            kind = "smash"
+        elif speed is not None and speed >= cfg.vibora_min_speed_mps:
+            kind = "vibora"
+        else:
+            kind = "bandeja"
     elif zone == "net":
         kind = "volley"
     elif ball is not None and side is not None and _is_lob(h.time_s, next_t, side, ball, cfg):
@@ -232,6 +245,8 @@ def _shot(
         court.side_of(b["court_y"]) == side for b in ball.bounces_between(prev_t, h.time_s)
     ):
         kind = "volley"  # seen all the way in and it never bounced on their side
+    elif kind == "groundstroke" and speed is not None and speed >= cfg.flat_min_speed_mps:
+        kind = "flat"
 
     return ShotInfo(
         time_s=round(h.time_s, 3),
@@ -244,7 +259,27 @@ def _shot(
         court_x=round(float(p.xy[0]), 2) if p is not None else None,
         court_y=round(float(p.xy[1]), 2) if p is not None else None,
         by=h.by,
+        speed_mps=round(speed, 1) if speed is not None else None,
     )
+
+
+def _flight_speed(t: float, next_t: float, p: Seen, side: str | None, ball: Ball) -> float | None:
+    """Court metres from the hitter to the ball's bounce on the other side, per second in the air."""
+    for b in ball.bounces_between(t, next_t):
+        if side is not None and court.side_of(b["court_y"]) != side:
+            flight = b["time_s"] - t
+            if flight < 0.15:
+                return None
+            return math.hypot(b["court_x"] - float(p.xy[0]), b["court_y"] - float(p.xy[1])) / flight
+    return None
+
+
+def _outcomes(shots: list[ShotInfo], point: PointInfo) -> None:
+    for s, after in zip(shots, shots[1:]):
+        if s.team is not None and after.team is not None and after.team != s.team:
+            s.outcome = "in_play"
+    if shots and point.ending in ("winner", "error"):
+        shots[-1].outcome = point.ending
 
 
 def _is_lob(t: float, next_t: float, side: str, ball: Ball, cfg: ShotsConfig) -> bool:

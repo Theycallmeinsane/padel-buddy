@@ -50,7 +50,7 @@ git-ignored. Settings come from environment variables or `.env`; see
 | `GET` | `/matches/{id}/results` | Every summary at once: tracking, clips, ball, shots and the match report |
 | `GET` | `/matches/{id}/report.md` | The match report as Markdown, with the players' names |
 | `PUT` | `/matches/{id}/players` | Name the players: `{"names": {"P1": "Maya", "P3": "Sara"}}`; an empty name clears one |
-| `GET` | `/matches/{id}/players/{P1-P4}` | One player in one match: their numbers, shots, best moments and own highlight reel |
+| `GET` | `/matches/{id}/players/{P1-P4}` | One player in one match: their numbers, success rate per kind of shot, shots, best moments, highlight reel, winners reel and shorts |
 | `GET` | `/people` | Everyone named in any match, with how many matches each |
 | `GET` | `/people/{name}` | One person across all their matches, newest first (name match ignores case) |
 | `GET` | `/matches/{id}/files/{path}` | Any output: clips, reel, thumbnails, heatmaps, preview (supports Range for video seeking) |

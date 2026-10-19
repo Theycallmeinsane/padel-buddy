@@ -173,6 +173,10 @@ def test_end_to_end_clips(tmp_path, monkeypatch):
         for r in summary.rallies
     ]
     assert segs[0][2] == 0 and all(b[2] - a[2] == pytest.approx(a[1] - a[0], abs=0.1) for a, b in zip(segs, segs[1:]))
+    # Each point is also its own clip: the condensed match's parts, kept.
+    assert [r.clip for r in summary.rallies] == [f"points/point_{r.index + 1:03d}.mp4" for r in summary.rallies]
+    first = summary.rallies[0]
+    assert abs(probe_duration(run / first.clip) - (segs[0][1] - segs[0][0])) < 0.5
     data = json.loads((run / "clips.json").read_text())
     assert data["clips"][0]["file"] == "clips/clip_001.mp4"
     assert (run / "hits.csv").read_text().startswith("time_s,strength")
@@ -191,6 +195,8 @@ def test_moments_mode_cuts_around_the_smash(tmp_path):
     assert clip.start_s == pytest.approx(clip.peak_s - 30, abs=0.01)
     assert clip.end_s == pytest.approx(script.duration, abs=0.1)
     assert summary.condensed is None
+    # Without the condensed match, each point is still cut on its own.
+    assert all((tmp_path / "run" / r.clip).exists() for r in summary.rallies)
 
 
 @needs_ffmpeg

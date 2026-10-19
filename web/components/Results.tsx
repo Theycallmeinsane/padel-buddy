@@ -3,8 +3,21 @@
 import { useState } from "react";
 import type { Api, Clip, Results as ResultsData } from "@/lib/api";
 import { formatTime } from "./common";
+import Points from "./Points";
 
-export default function Results({ api, matchId, data }: { api: Api; matchId: string; data: ResultsData }) {
+export default function Results({
+  api,
+  matchId,
+  data,
+  names,
+  onSeek,
+}: {
+  api: Api;
+  matchId: string;
+  data: ResultsData;
+  names?: Record<string, string>;
+  onSeek?: (t: number) => void;
+}) {
   const clips = data.clips;
   const tracking = data.tracking;
   const points = clips?.clips.some((c) => c.rallies?.length) ?? false;
@@ -43,6 +56,8 @@ export default function Results({ api, matchId, data }: { api: Api; matchId: str
           </div>
         </section>
       )}
+
+      <Points api={api} matchId={matchId} data={data} names={names} onSeek={onSeek} />
 
       {tracking && (
         <section className="card">

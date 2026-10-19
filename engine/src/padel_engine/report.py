@@ -9,12 +9,20 @@ points to go on.
 
 Each player also gets their own highlights: the points they finished with a
 winner, their overheads and the long points their team won, best first, cut
-into a short reel.
+into a short reel; and every winner they hit joined into a winners reel.
+
+Per kind of shot, each player's success rate is the share kept in play or
+won outright, among shots whose outcome is known. Kinds with enough shots are
+rated strong, solid or weak, and the weakest becomes a tip.
+
+The best points, and each player's best winner, are also cut as vertical
+shorts (see ``shorts.py``).
 
 With ANTHROPIC_API_KEY set, Claude also writes a short coaching summary from
 the report's numbers (see ``coach.py``).
 
-Writes report.json (schemas.MatchReport), report.md and players/P1.mp4 ...
+Writes report.json (schemas.MatchReport), report.md, players/P1.mp4 and
+players/P1_winners.mp4 ..., and shorts/*.mp4.
 """
 
 from __future__ import annotations
@@ -27,11 +35,14 @@ import numpy as np
 
 from . import __version__, analytics, coach, court
 from .config import EngineConfig
-from .schemas import MatchReport, PlayerMoment, PlayerReport, PointInfo, ShotInfo, ShotsSummary, TeamReport, Tip
+from .schemas import (
+    MatchReport, PlayerMoment, PlayerReport, PointInfo, Short, ShotInfo, ShotStat, ShotsSummary, TeamReport, Tip,
+)
 from .shots import Players
 
-KINDS = ("serve", "return", "volley", "smash", "bandeja", "lob", "groundstroke", "unknown")
+KINDS = ("serve", "return", "volley", "smash", "vibora", "bandeja", "lob", "flat", "groundstroke", "unknown")
 FORMATIONS = ("both_net", "split", "both_back", "other")
+OVERHEAD_SCORE = {"smash": 2.0, "vibora": 1.75, "bandeja": 1.5}
 
 
 def build_report(shots: ShotsSummary, overlay: dict, clips: dict, cfg: EngineConfig | None = None) -> MatchReport:
@@ -114,7 +125,46 @@ def _player(
         zone_share={k: round(v, 3) for k, v in analytics.zone_share(xy[inside]).items()},
         side_share={k: round(v, 3) for k, v in analytics.side_share(xy[inside]).items()},
         highlights=player_moments(pid, team, shots, points, last_shot, rallies, cfg.report.player_moments),
+        winning_shots=winning_shots(pid, team, points, last_shot, rallies),
+        **shot_stats(mine, cfg),
     )
+
+
+def shot_stats(mine: list[ShotInfo], cfg: EngineConfig) -> dict:
+    """Per kind of shot: how often it stayed in play or won the point, and a rating once there are enough."""
+    stats = []
+    for kind in KINDS:
+        of_kind = [s for s in mine if s.kind == kind]
+        if kind == "unknown" or not of_kind:
+            continue
+        outcomes = Counter(s.outcome for s in of_kind if s.outcome is not None)
+        known = sum(outcomes.values())
+        success = (outcomes["in_play"] + outcomes["winner"]) / known if known else None
+        rating = None
+        if success is not None and known >= cfg.report.rating_min_shots:
+            rating = "weak" if success < cfg.report.weak_below else "strong" if success >= cfg.report.strong_from else "solid"
+        stats.append(ShotStat(
+            kind=kind, shots=len(of_kind), known=known, in_play=outcomes["in_play"], winners=outcomes["winner"],
+            errors=outcomes["error"], success=round(success, 3) if success is not None else None, rating=rating,
+        ))
+    stats.sort(key=lambda x: -x.shots)
+    strong = sorted((x for x in stats if x.rating == "strong"), key=lambda x: (-x.success, -x.winners))
+    weak = sorted((x for x in stats if x.rating == "weak"), key=lambda x: (x.success, -x.errors))
+    return {"shot_stats": stats, "strengths": [x.kind for x in strong], "weaknesses": [x.kind for x in weak]}
+
+
+def winning_shots(
+    pid: str, team: str, points: list[PointInfo], last_shot: dict[int, ShotInfo], rallies: dict[int, dict]
+) -> list[PlayerMoment]:
+    """Every point the player finished with a winner: the build-up and the finish."""
+    found = []
+    for p in points:
+        s = last_shot.get(p.rally)
+        rally = rallies.get(p.rally)
+        if p.ending == "winner" and p.won_by == team and s is not None and s.player == pid and rally is not None:
+            found.append(_moment(s, "winner", 3.0 + float(rally.get("score", 0.0)),
+                                 max(rally["start_s"] - 1.0, s.time_s - 8.0), s.time_s + 3.0))
+    return found
 
 
 def _team(
@@ -176,8 +226,8 @@ def player_moments(
         quality = float(rally.get("score", 0.0))
         if last_shot.get(s.rally) is s and s.rally in won and won[s.rally].ending == "winner":
             found.append(_moment(s, "winner", 3.0 + quality, max(rally["start_s"] - 1.0, s.time_s - 8.0), s.time_s + 3.0))
-        elif s.kind in ("smash", "bandeja"):
-            found.append(_moment(s, s.kind, (2.0 if s.kind == "smash" else 1.5) + quality, s.time_s - 4.0, s.time_s + 2.5))
+        elif s.kind in OVERHEAD_SCORE:
+            found.append(_moment(s, s.kind, OVERHEAD_SCORE[s.kind] + quality, s.time_s - 4.0, s.time_s + 2.5))
     for index, p in won.items():
         rally = rallies.get(index)
         played = sum(s.rally == index and s.player == pid for s in shots)
@@ -238,6 +288,12 @@ def tips(report: MatchReport, players: dict[str, PlayerReport], cfg: EngineConfi
                 f"were {_plural(kind)}. Play those with more margin, higher over the net and towards the middle, "
                 "and wait for an easier ball to finish."
             )))
+        weakest = next((x for x in p.shot_stats if p.weaknesses and x.kind == p.weaknesses[0]), None)
+        if weakest is not None:
+            out.append(Tip(who=p.player, topic="shot", text=(
+                f"{p.player} kept {weakest.in_play + weakest.winners} of {weakest.known} {_plural(weakest.kind)} in "
+                f"play ({weakest.success:.0%}), the weakest of their shots. {SHOT_ADVICE.get(weakest.kind, '')}"
+            ).strip()))
         overheads = p.shot_kinds.get("smash", 0)
         if overheads >= 5 and p.errors_by_kind.get("smash", 0) >= 3:
             out.append(Tip(who=p.player, topic="overheads", text=(
@@ -264,8 +320,22 @@ def tips(report: MatchReport, players: dict[str, PlayerReport], cfg: EngineConfi
     return out
 
 
+SHOT_ADVICE = {
+    "serve": "Serve with more margin: deep to the glass and at the receiver's body, rather than hard.",
+    "return": "Return low at the server's feet or lob deep; a safe return beats a big one.",
+    "volley": "Keep the racket up in front, punch rather than swing, and aim deep through the middle.",
+    "smash": "Smash only balls in front of you near the net; anything behind you is a bandeja.",
+    "vibora": "The vibora is the riskiest overhead: play it only on high balls in front of you, and a bandeja "
+    "otherwise.",
+    "bandeja": "Aim for depth and control, not pace: towards the side glass corner, so you keep the net.",
+    "lob": "Lob higher and deeper, over the backhand side, so the opponents have to turn and run.",
+    "flat": "Hit the flat drive with more margin over the net, cross-court, rather than down the line.",
+    "groundstroke": "Let the ball come off the glass, then play it low through the middle.",
+}
+
+
 def _plural(kind: str) -> str:
-    return {"smash": "smashes", "unknown": "shots of an unknown kind"}.get(kind, f"{kind}s")
+    return {"smash": "smashes", "unknown": "shots of an unknown kind", "flat": "flat drives"}.get(kind, f"{kind}s")
 
 
 def to_markdown(report: MatchReport, names: dict[str, str] | None = None) -> str:
@@ -311,9 +381,13 @@ def to_markdown(report: MatchReport, names: dict[str, str] | None = None) -> str
             f"{p.distance_per_point_m:.0f} | {p.top_speed_mps * 3.6:.1f} km/h |"
         )
     for p in report.players:
-        if p.shot_kinds:
-            kinds = ", ".join(f"{n} {k}" for k, n in p.shot_kinds.items())
-            lines += ["", f"**{who(p.player)}:** {kinds}."]
+        if not p.shot_stats:
+            continue
+        lines += ["", f"### {who(p.player)}", "", "| Shot | Played | Kept in play | Winners | Errors | Rating |",
+                  "| --- | --- | --- | --- | --- | --- |"]
+        for x in p.shot_stats:
+            kept = f"{x.success:.0%} of {x.known}" if x.success is not None else "–"
+            lines.append(f"| {x.kind} | {x.shots} | {kept} | {x.winners} | {x.errors} | {x.rating or '–'} |")
     if report.tips:
         lines += ["", "## What to work on", ""]
         lines += [f"- {name_all(t.text)}" for t in report.tips]
@@ -333,9 +407,7 @@ def run_report(
     config: EngineConfig | None = None,
     on_progress=None,
 ) -> MatchReport:
-    """Report for a run folder with shots.json; cuts player reels when the video is given."""
-    from .clips import reel
-
+    """Report for a run folder with shots.json; cuts player reels and shorts when the video is given."""
     cfg = config or EngineConfig()
     out = Path(out_dir)
     report_progress = on_progress or (lambda p: None)
@@ -344,14 +416,9 @@ def run_report(
     clips = json.loads((out / "clips.json").read_text())
     report = build_report(shots, overlay, clips, cfg)
 
-    if video_path is not None and cfg.report.player_reels:
-        (out / "players").mkdir(exist_ok=True)
-        for i, p in enumerate(report.players, start=1):
-            if p.highlights:
-                p.reel = f"players/{p.player}.mp4"
-                reel(video_path, reel_spans(p.highlights), out / p.reel, cfg.clips.video_crf,
-                     height=cfg.report.player_reel_height)
-            report_progress(0.9 * i / len(report.players))
+    if video_path is not None:
+        _cut_player_reels(report, video_path, out, cfg, lambda f: report_progress(0.6 * f))
+        report.shorts = _cut_shorts(report, clips, overlay, video_path, out, cfg, lambda f: report_progress(0.6 + 0.3 * f))
     if cfg.report.ai_summary:
         report.coach_summary = coach.summary(report, cfg.report.ai_model)
 
@@ -360,3 +427,50 @@ def run_report(
     (out / "report.md").write_text(to_markdown(report))
     report_progress(1.0)
     return report
+
+
+def _cut_player_reels(report: MatchReport, video_path, out: Path, cfg: EngineConfig, progress) -> None:
+    from .clips import reel
+
+    jobs = []
+    for p in report.players:
+        if cfg.report.player_reels and p.highlights:
+            p.reel = f"players/{p.player}.mp4"
+            jobs.append((p.highlights, p.reel))
+        if cfg.report.winner_reels and p.winning_shots:
+            p.winners_reel = f"players/{p.player}_winners.mp4"
+            jobs.append((p.winning_shots, p.winners_reel))
+    if jobs:
+        (out / "players").mkdir(exist_ok=True)
+    for i, (moments, name) in enumerate(jobs, start=1):
+        reel(video_path, reel_spans(moments), out / name, cfg.clips.video_crf, height=cfg.report.player_reel_height)
+        progress(i / len(jobs))
+
+
+def _cut_shorts(
+    report: MatchReport, clips: dict, overlay: dict, video_path, out: Path, cfg: EngineConfig, progress
+) -> list[Short]:
+    from .shorts import court_columns, cut_vertical, span
+
+    rc = cfg.report
+    best = sorted(clips.get("rallies", []), key=lambda r: -r.get("score", 0.0))[: rc.shorts]
+    planned = [
+        Short(file=f"shorts/point_{r['index'] + 1:03d}.mp4", rally=r["index"], title=f"Point {r['index'] + 1}",
+              **dict(zip(("start_s", "end_s"), span(r["start_s"] - 1.5, r["end_s"] + 2.0, rc.short_max_s))))
+        for r in sorted(best, key=lambda r: r["start_s"])
+    ]
+    if rc.player_shorts:
+        for p in report.players:
+            if p.winning_shots:
+                m = max(p.winning_shots, key=lambda m: m.score)
+                a, b = span(m.start_s, m.end_s, rc.short_max_s)
+                planned.append(Short(file=f"shorts/{p.player}_winner.mp4", rally=m.rally, start_s=a, end_s=b,
+                                     title=f"{p.player}'s winner", player=p.player))
+    if not planned:
+        return []
+    (out / "shorts").mkdir(exist_ok=True)
+    columns = court_columns(overlay)
+    for i, s in enumerate(planned, start=1):
+        cut_vertical(video_path, s.start_s, s.end_s, out / s.file, columns, rc.short_height, cfg.clips.video_crf)
+        progress(i / len(planned))
+    return [s.model_copy(update={"start_s": round(s.start_s, 2), "end_s": round(s.end_s, 2)}) for s in planned]

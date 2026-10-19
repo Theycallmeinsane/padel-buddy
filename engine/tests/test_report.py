@@ -72,6 +72,26 @@ def test_each_player_gets_their_own_highlights():
     assert all(a < b for a, b in spans) and all(b1 <= a2 for (_, b1), (a2, _) in zip(spans, spans[1:]))
 
 
+def test_each_shot_kind_gets_a_success_rate():
+    report = build_report(summary(), mf.overlay(), mf.clips(), config(rating_min_shots=2))
+    players = {p.player: p for p in report.players}
+    volley = next(x for x in players["P2"].shot_stats if x.kind == "volley")
+    assert (volley.shots, volley.known, volley.in_play, volley.errors, volley.success) == (2, 2, 1, 1, 0.5)
+    assert volley.rating == "weak" and players["P2"].weaknesses == ["volley"]
+    assert players["P3"].strengths == ["return"]
+    tip = next(t for t in report.tips if t.topic == "shot")
+    assert tip.who == "P2" and "kept 1 of 2 volleys in play (50%)" in tip.text
+    # By default a kind needs 5 shots with a known outcome before it is rated.
+    default = build_report(summary(), mf.overlay(), mf.clips(), config())
+    assert all(x.rating is None for p in default.players for x in p.shot_stats)
+
+
+def test_winners_reel_holds_every_winner_the_player_hit():
+    report = build_report(summary(), mf.overlay(), mf.clips(), config())
+    winners = {p.player: [(m.kind, m.rally, m.start_s, m.end_s) for m in p.winning_shots] for p in report.players}
+    assert winners == {"P1": [], "P2": [], "P3": [("winner", 0, 2.0, 13.0)], "P4": []}
+
+
 def test_markdown_uses_names_when_given():
     report = build_report(summary(), mf.overlay(), mf.clips(), config())
     md = to_markdown(report, {"P3": "Maya"})
@@ -91,9 +111,20 @@ def test_run_report_cuts_a_reel_per_player(tmp_path):
     (tmp_path / "overlay.json").write_text(json.dumps(mf.overlay()))
     (tmp_path / "clips.json").write_text(json.dumps(mf.clips()))
     report = run_report(tmp_path, video, config())
-    reels = {p.player: p.reel for p in report.players}
-    assert reels["P3"] == "players/P3.mp4" and (tmp_path / "players/P3.mp4").stat().st_size > 0
-    assert reels["P4"] is None
+    reels = {p.player: (p.reel, p.winners_reel) for p in report.players}
+    assert reels["P3"] == ("players/P3.mp4", "players/P3_winners.mp4")
+    assert reels["P4"] == (None, None)
+    assert (tmp_path / "players/P3.mp4").stat().st_size > 0 and (tmp_path / "players/P3_winners.mp4").stat().st_size > 0
+    # A vertical short of each point (there are only three) and of P3's winner.
+    assert [(s.file, s.player) for s in report.shorts] == [
+        ("shorts/point_001.mp4", None), ("shorts/point_002.mp4", None), ("shorts/point_003.mp4", None),
+        ("shorts/P3_winner.mp4", "P3"),
+    ]
+    size = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+         str(tmp_path / "shorts/P3_winner.mp4")], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert size == "720,1280"
     assert json.loads((tmp_path / "report.json").read_text())["outputs"]["markdown"] == "report.md"
     assert (tmp_path / "report.md").read_text().startswith("# Match report")
 

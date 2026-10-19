@@ -16,7 +16,7 @@ app, phones, an Android app and a desktop app.
 | 2 | Rally detection, clips (±30 s around intense moments) and highlights | Built, awaiting real footage |
 | 3 | API, job queue and storage | Built ([api/](api/)) |
 | 3 | Web app (desktop and phone browsers) | Built ([web/](web/)) |
-| 4 | Ball tracking, shots, how points ended, match report, per-player highlights | Built, awaiting real footage |
+| 4 | Ball tracking, shots, how points ended, match report, success rate per shot, per-player highlights and winners, shorts, a clip per point | Built, awaiting real footage |
 | 5 | Pose (forehand / backhand, technique), automatic court detection | Later |
 
 See [docs/architecture.md](docs/architecture.md) for how the pieces fit.

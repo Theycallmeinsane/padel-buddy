@@ -243,6 +243,12 @@ def _print_report(report, out: Path) -> None:
     for p in report.players:
         reel = f"  reel {out}/{p.reel}" if p.reel else ""
         typer.echo(f"  {p.player}: {p.shots} shots, {p.winners} winners, {p.errors} errors{reel}")
+        if p.strengths or p.weaknesses:
+            typer.echo(f"      strong: {', '.join(p.strengths) or '-'}; work on: {', '.join(p.weaknesses) or '-'}")
+        if p.winners_reel:
+            typer.echo(f"      winners {out}/{p.winners_reel}")
+    if report.shorts:
+        typer.echo(f"  {len(report.shorts)} shorts in {out}/shorts")
 
 
 def _mmss(t: float) -> str:

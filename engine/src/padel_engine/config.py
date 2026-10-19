@@ -48,6 +48,22 @@ class TrackingConfig(BaseModel):
         8.0, gt=0, description="Fastest plausible player movement, used to gate matches."
     )
     base_gate_m: float = Field(1.0, gt=0, description="Matching slack on top of max speed.")
+    position_cost_per_m: float = Field(
+        0.5, ge=0, description="Matching cost per metre between where a player was last seen and someone now."
+    )
+    stale_after_s: float = Field(
+        0.5,
+        gt=0,
+        description="Only this soon after a player was seen does the tracker keeping their id outweigh shirt "
+        "colours that disagree; after that they must look like themselves to be matched, so they cannot "
+        "take a teammate who walks into the spot where they vanished.",
+    )
+    stale_cost_per_s: float = Field(
+        1.0,
+        ge=0,
+        description="Matching cost per second a player has gone unseen, so whoever was seen a moment ago "
+        "keeps their number over someone who vanished.",
+    )
     reacquire_after_s: float = Field(
         2.0, gt=0, description="A player unseen for this long is re-found by appearance alone."
     )
@@ -67,8 +83,36 @@ class TrackingConfig(BaseModel):
     )
     duplicate_area_ratio: float = Field(0.4, gt=0, le=1)
     appearance_weight: float = Field(0.5, ge=0)
-    track_id_bonus: float = Field(0.3, ge=0)
+    track_id_bonus: float = Field(
+        0.3,
+        ge=0,
+        description="Matching bonus when the detector's track id agrees, unless the colours say it is "
+        "someone else (the tracker often hands a hidden player's id to whoever is in front).",
+    )
     appearance_momentum: float = Field(0.05, gt=0, le=1)
+    repair_identities: bool = Field(
+        True,
+        description="After tracking, re-check who is who by shirt colour and fix numbers the live pass mixed "
+        "up, so a player who vanishes gets their own number back when they return.",
+    )
+    segment_gap_s: float = Field(
+        0.5,
+        gt=0,
+        description="The repair splits a player's track wherever they were unseen this long (or jumped "
+        "faster than max speed) and decides afresh who each piece is.",
+    )
+    prototype_min_s: float = Field(
+        3.0, gt=0, description="Only pieces with this much clear view build a player's reference colours."
+    )
+    repair_min_clear_s: float = Field(
+        0.3, ge=0, description="A piece needs this much clear view for its colours to count in the repair."
+    )
+    repair_switch_cost: float = Field(
+        0.1,
+        ge=0,
+        description="How much closer (colour distance) a piece must be to another player's colours before "
+        "the repair changes its number; keeps teammates in the same kit from being shuffled.",
+    )
 
 
 class AnalyticsConfig(BaseModel):
@@ -140,6 +184,9 @@ class ClipsConfig(BaseModel):
     condensed: bool = True
     condensed_pad_s: float = Field(2.0, ge=0, description="Kept before and after each point.")
     condensed_height: int = Field(720, ge=144, description="The condensed match is long, so it is encoded smaller.")
+    point_clips: bool = Field(
+        True, description="Keep every point as its own clip (points/point_001.mp4 ...), at the condensed size."
+    )
 
     # Encoding
     video_crf: int = Field(23, ge=0, le=51, description="x264 quality; lower is better and bigger.")
@@ -190,6 +237,15 @@ class ShotsConfig(BaseModel):
     lob_min_depth_m: float = Field(
         6.95, ge=0, description="How far past the net a lob lands: by default behind the service line."
     )
+    flat_min_speed_mps: float = Field(
+        12.0, gt=0, description="A groundstroke this fast (court metres to its bounce per second in the air) is flat."
+    )
+    vibora_min_speed_mps: float = Field(
+        15.0, gt=0, description="An overhead from the back this fast is a vibora; slower ones are bandejas."
+    )
+    smash_min_speed_mps: float = Field(
+        22.0, gt=0, description="An overhead from the back this fast is a smash (at the net every overhead is)."
+    )
 
 
 class ReportConfig(BaseModel):
@@ -204,6 +260,16 @@ class ReportConfig(BaseModel):
     player_reels: bool = Field(True, description="Cut a highlight reel of each player's best moments.")
     player_moments: int = Field(10, ge=1, description="Most moments in a player's highlights.")
     player_reel_height: int = Field(720, gt=0)
+    winner_reels: bool = Field(True, description="Cut every winner each player hit into one reel per player.")
+    rating_min_shots: int = Field(
+        5, ge=1, description="A shot kind needs this many shots with a known outcome before it is rated."
+    )
+    weak_below: float = Field(0.75, ge=0, le=1, description="A shot kind kept in play less often than this is weak.")
+    strong_from: float = Field(0.9, ge=0, le=1, description="A shot kind kept in play at least this often is strong.")
+    shorts: int = Field(5, ge=0, description="Vertical shorts of the best points, for phones; 0 for none.")
+    player_shorts: bool = Field(True, description="Also a vertical short of each player's best winner.")
+    short_height: int = Field(1280, ge=320, description="Shorts are 9:16 at this height.")
+    short_max_s: float = Field(59.0, gt=0, description="Shorts are cut to at most this long.")
 
 
 class OutputConfig(BaseModel):

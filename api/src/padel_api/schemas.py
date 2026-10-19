@@ -75,6 +75,8 @@ class PlayerOut(BaseModel):
     report: dict | None  # engine PlayerReport
     shots: list[dict]  # engine ShotInfo, this player's only
     reel: str | None  # path for /matches/{id}/files/
+    winners_reel: str | None = None  # every winner they hit, joined
+    shorts: list[dict] = []  # engine Short: their own vertical shorts
 
 
 class PersonOut(BaseModel):

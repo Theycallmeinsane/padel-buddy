@@ -9,11 +9,13 @@ Writes into the run folder (the same one tracking uses, if it ran first):
     clips/clip_001.jpg    thumbnail from the middle of the point
     highlights.mp4        the best rallies, cut tight and joined in match order
     condensed.mp4         every point back to back, dead time cut out (720p)
+    points/point_001.mp4  every point on its own, numbered like the app's "Point 1" (720p)
 """
 
 from __future__ import annotations
 
 import csv
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -85,13 +87,25 @@ def run_clips(
     report(0.65)
     condensed_file = None
     condensed_offsets: list[float] = []
+    # Every point on its own; the condensed match is these parts joined, so they cost no extra encoding.
+    point_segments = condensed or events.condensed_segments(rallies, duration, cfg.clips)
+    point_files = [f"points/point_{s.rallies[0] + 1:03d}.mp4" for s in point_segments] if cfg.clips.point_clips else []
+    if point_files:
+        (out / "points").mkdir(exist_ok=True)
+        outputs["points"] = "points"
     if condensed:
         condensed_file = "condensed.mp4"
         condensed_offsets = reel(
             video_path, [(s.start, s.end) for s in condensed], out / condensed_file, cfg.clips.video_crf,
             height=cfg.clips.condensed_height, on_part=lambda f: report(0.65 + 0.35 * f),
+            keep_parts=[out / f for f in point_files] or None,
         )
         outputs["condensed"] = condensed_file
+    elif point_files:
+        for i, (s, f) in enumerate(zip(point_segments, point_files), start=1):
+            cut(video_path, s.start, s.end, out / f, cfg.clips.video_crf, cfg.clips.condensed_height)
+            report(0.65 + 0.35 * i / len(point_files))
+    clip_of = {r: f for s, f in zip(point_segments, point_files) for r in s.rallies}
 
     summary = ClipsSummary(
         engine_version=__version__,
@@ -106,7 +120,7 @@ def run_clips(
                 index=r.index, start_s=round(r.start, 2), end_s=round(r.end, 2), hits=r.hits,
                 peak_excess_db=round(r.peak_excess_db, 1),
                 movement_mps=None if r.movement_mps is None else round(r.movement_mps, 2),
-                score=round(r.score, 3),
+                score=round(r.score, 3), clip=clip_of.get(r.index),
             )
             for r in rallies
         ],
@@ -150,13 +164,14 @@ def reel(
     crf: int = 23,
     height: int | None = None,
     on_part: Callable[[float], None] | None = None,
+    keep_parts: list[Path] | None = None,
 ) -> list[float]:
     """Cut each span and join them; parts share encoder settings, so joining is lossless.
 
     Returns where each span starts in the joined video. Each cut comes out a
     few milliseconds off its nominal length (whole frames, audio priming), so
     over hundreds of points only the measured lengths keep the app's overlays
-    in sync.
+    in sync. With ``keep_parts`` (one path per span), each part is kept there.
     """
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         parts = []
@@ -174,6 +189,8 @@ def reel(
         # ffmpeg resolves relative entries against the list's own folder.
         listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
         _ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(dest))
+        for part, keep in zip(parts, keep_parts or []):
+            shutil.move(part, keep)
     return offsets
 
 
