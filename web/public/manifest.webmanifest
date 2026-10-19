@@ -1,0 +1,10 @@
+{
+  "name": "Padel Buddy",
+  "short_name": "Padel Buddy",
+  "description": "Upload a padel match; get clips, highlights and player stats.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1412",
+  "theme_color": "#1f7a4d",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

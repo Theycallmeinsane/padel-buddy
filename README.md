@@ -14,7 +14,7 @@ app, phones, an Android app and a desktop app.
 | 1 | Court mapping and player tracking | Built, awaiting real footage ([engine/](engine/)) |
 | 2 | Rally detection, clips (±30 s around intense moments) and highlights | Built, awaiting real footage |
 | 3 | API, job queue and storage | Built ([api/](api/)) |
-| 3 | Web app | Next |
+| 3 | Web app (desktop and phone browsers) | Built ([web/](web/)) |
 | 4 | Ball tracking, shots, mistakes and match report | Later |
 
 See [docs/architecture.md](docs/architecture.md) for how the pieces fit.
@@ -30,8 +30,10 @@ padel-engine calibrate path/to/match.mp4 --out data/calibration.json
 padel-engine analyze path/to/match.mp4 -c data/calibration.json --out runs/match1
 ```
 
-Details in [engine/README.md](engine/README.md). To run the API and its
-worker instead (what the web app will use), see [api/README.md](api/README.md).
+Details in [engine/README.md](engine/README.md).
+
+To use it from a browser instead: run the API and a worker
+([api/README.md](api/README.md)), then the web app ([web/README.md](web/README.md)).
 
 ## Repository rules
 

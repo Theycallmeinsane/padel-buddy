@@ -27,9 +27,12 @@ venv/
 build/
 dist/
 
-# Node (web app, later)
+# Node (web app)
 node_modules/
 .next/
+web/out/
+next-env.d.ts
+*.tsbuildinfo
 
 # OS / editors
 .DS_Store

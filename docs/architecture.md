@@ -59,6 +59,13 @@ FastAPI plus a worker process. Uploads are resumable (chunks with
 with a conditional `UPDATE`), and SQLite or Postgres is just a URL. Details
 in [api/README.md](../api/README.md).
 
+## Web app (`web/`)
+
+A static Next.js export: upload with pause and resume, in-browser court
+calibration, progress, the highlight reel, clip gallery, player table and
+heatmaps. Being static, the same build can be wrapped as the Android app
+(Capacitor) and the desktop app (Tauri) later without a server of its own.
+
 ## Roadmap
 
 1. **Court mapping and player tracking.** Built.
@@ -66,9 +73,8 @@ in [api/README.md](../api/README.md).
    (ranked with player movement when tracking ran), clips from 30 s before
    to 30 s after, overlapping windows merged so a long rally is one clip,
    and a reel of the best rallies.
-3. **API and web app.** API and worker built. Next: a responsive Next.js
-   app with in-browser calibration (click the court once per camera
-   position), progress, a clip gallery and the stats.
+3. **API and web app.** Built. Next for this step: object storage for a
+   cloud deployment, and the Android and desktop shells.
 4. **Shots and mistakes.** Ball tracking, pose, shot classification, error
    detection and a written match report built on the tracking data.
 
