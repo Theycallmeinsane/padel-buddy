@@ -33,6 +33,7 @@ function MatchView() {
   const [focus, setFocus] = useState<string | null>(null);
   const [seekTo, setSeekTo] = useState<{ t: number; n: number } | null>(null);
   const names = useMemo(() => match?.player_names ?? {}, [match?.player_names]);
+  const seek = useCallback((t: number) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 })), []);
 
   const refresh = useCallback(async () => {
     try {
@@ -182,10 +183,10 @@ function MatchView() {
           onNames={saveNames}
           focus={focus}
           onFocus={setFocus}
-          onSeek={(t) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 }))}
+          onSeek={seek}
         />
       )}
-      {results && <Results api={api} matchId={id} data={results} />}
+      {results && <Results api={api} matchId={id} data={results} names={names} onSeek={seek} />}
 
       {error && <p className="error small">{error}</p>}
       <p>

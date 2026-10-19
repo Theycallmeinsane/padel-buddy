@@ -68,6 +68,7 @@ export type Rally = {
   peak_excess_db: number;
   movement_mps: number | null;
   score: number;
+  clip?: string | null; // this point on its own, e.g. points/point_007.mp4
 };
 
 export type ClipsSummary = {
@@ -116,7 +117,8 @@ export type BallTrack = {
   bounces: Bounce[];
 };
 
-export type ShotKind = "serve" | "return" | "volley" | "smash" | "bandeja" | "lob" | "groundstroke" | "unknown";
+export type ShotKind =
+  | "serve" | "return" | "volley" | "smash" | "vibora" | "bandeja" | "lob" | "flat" | "groundstroke" | "unknown";
 
 export type Shot = {
   time_s: number;
@@ -129,6 +131,9 @@ export type Shot = {
   court_x: number | null;
   court_y: number | null;
   by: "ball" | "turn";
+  speed_mps?: number | null; // court metres to the next bounce per second in the air, when seen
+  // in_play: the other team played it back; winner / error: it ended the point; null: not known
+  outcome?: "in_play" | "winner" | "error" | null;
 };
 
 export type PointEnding = {
@@ -150,8 +155,30 @@ export type PlayerMoment = {
   start_s: number;
   end_s: number;
   rally: number;
-  kind: string; // winner, smash, bandeja, point
+  kind: string; // winner, smash, vibora, bandeja, point
   score: number;
+};
+
+/** How one kind of shot went for a player. */
+export type ShotStat = {
+  kind: ShotKind;
+  shots: number;
+  known: number; // shots whose outcome is known
+  in_play: number; // played back by the other team
+  winners: number;
+  errors: number;
+  success: number | null; // (in play + winners) / known, 0..1
+  rating: "strong" | "solid" | "weak" | null; // once there are enough known shots
+};
+
+/** A vertical (9:16) clip of one point, for phones and sharing. */
+export type Short = {
+  file: string;
+  rally: number;
+  start_s: number;
+  end_s: number;
+  title: string; // "Point 12" or "P3's winner"
+  player: string | null; // set for a player's own short
 };
 
 export type PlayerReport = {
@@ -168,6 +195,11 @@ export type PlayerReport = {
   side_share: Record<string, number>;
   highlights: PlayerMoment[];
   reel: string | null;
+  shot_stats?: ShotStat[]; // most played first
+  strengths?: ShotKind[]; // rated strong, best first
+  weaknesses?: ShotKind[]; // rated weak, weakest first
+  winning_shots?: PlayerMoment[]; // every point they finished with a winner
+  winners_reel?: string | null; // those points joined
 };
 
 export type TeamReport = {
@@ -194,6 +226,7 @@ export type MatchReport = {
   players: PlayerReport[];
   tips: Tip[];
   coach_summary: string | null;
+  shorts?: Short[];
   outputs: Record<string, string>;
 };
 
@@ -208,6 +241,8 @@ export type PlayerInMatch = {
   report: PlayerReport | null;
   shots: Shot[];
   reel: string | null;
+  winners_reel?: string | null;
+  shorts?: Short[]; // this player's own shorts
 };
 
 export type Person = { name: string; matches: number };
@@ -336,4 +371,9 @@ export class Api {
 export function playerLabel(pid: string, names?: Record<string, string>): string {
   const name = names?.[pid];
   return name ? `${name} (${pid})` : pid;
+}
+
+/** Swap P1..P4 in engine text (tips, titles) for the players' names. */
+export function withNames(text: string, names: Record<string, string> = {}): string {
+  return text.replace(/\bP[1-4]\b/g, (pid) => names[pid] ?? pid);
 }

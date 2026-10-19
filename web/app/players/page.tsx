@@ -127,7 +127,14 @@ function PersonView({ api, name }: { api: Api; name: string }) {
             </span>
           </div>
           {e.report ? (
-            <PlayerCard api={api} matchId={e.match_id} p={e.report} name={name} />
+            <PlayerCard
+              api={api}
+              matchId={e.match_id}
+              p={e.report}
+              name={name}
+              names={{ [e.player]: name }}
+              shorts={e.shorts ?? []}
+            />
           ) : (
             <p className="muted small" style={{ margin: 0 }}>
               This match has no report yet. Calibrate the court and analyse it to get one.

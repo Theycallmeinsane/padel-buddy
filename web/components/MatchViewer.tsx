@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot } from "@/lib/api";
+import { KIND_LABELS } from "@/lib/shots";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
 
@@ -25,10 +26,6 @@ const COURT_LINES: [number, number, number, number][] = [
 
 type Layers = { lines: boolean; players: boolean; ball: boolean; shots: boolean; minimap: boolean };
 type Marks = { shots: Shot[]; names: Record<string, string>; focus: string | null };
-const SHOT_NAMES: Record<string, string> = {
-  serve: "Serve", return: "Return", volley: "Volley", smash: "Smash", bandeja: "Bandeja", lob: "Lob",
-  groundstroke: "Groundstroke",
-};
 type Source = "points" | "full";
 
 export default function MatchViewer({
@@ -301,7 +298,7 @@ function paint(
     if (layers.shots) {
       for (let k = lowerBoundBy(marks.shots, t - SHOT_LABEL_S); k < marks.shots.length && marks.shots[k].time_s <= t; k++) {
         const shot = marks.shots[k];
-        if (shot.player && SHOT_NAMES[shot.kind]) played.set(shot.player, shot);
+        if (shot.player && shot.kind !== "unknown" && KIND_LABELS[shot.kind]) played.set(shot.player, shot);
       }
     }
     for (const [pid, p] of Object.entries(overlay.players)) {
@@ -314,7 +311,7 @@ function paint(
       ctx.strokeStyle = ctx.fillStyle = PLAYER_COLORS[pid] ?? "#ffffff";
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       const shot = played.get(pid);
-      ctx.fillText(`${marks.names[pid] ?? pid}${shot ? ` · ${SHOT_NAMES[shot.kind]}` : ""}`, x1, y1 - 3 * px);
+      ctx.fillText(`${marks.names[pid] ?? pid}${shot ? ` · ${KIND_LABELS[shot.kind]}` : ""}`, x1, y1 - 3 * px);
     }
     ctx.globalAlpha = 1;
   }

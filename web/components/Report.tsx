@@ -3,32 +3,24 @@
 import { useState } from "react";
 import {
   playerLabel,
+  withNames,
   type Api,
   type MatchReport,
   type PlayerMoment,
   type PlayerReport,
-  type ShotKind,
+  type Short,
+  type ShotStat,
 } from "@/lib/api";
+import { focusLine, keptInPlay, kindLabel, statsFromKinds } from "@/lib/shots";
 import { formatTime } from "./common";
 import { PLAYER_COLORS } from "./MatchViewer";
 
 const PLAYERS = ["P1", "P2", "P3", "P4"];
-const KIND_LABELS: Record<ShotKind, string> = {
-  serve: "Serve",
-  return: "Return",
-  volley: "Volley",
-  smash: "Smash",
-  bandeja: "Bandeja",
-  lob: "Lob",
-  groundstroke: "Groundstroke",
-  unknown: "Not sure",
-};
 const MOMENT_LABELS: Record<string, string> = {
   winner: "Winner",
-  smash: "Smash",
-  bandeja: "Bandeja",
   point: "Long point won",
 };
+const RATING_LABELS: Record<string, string> = { strong: "Strong", solid: "Solid", weak: "Weak" };
 
 type Props = {
   api: Api;
@@ -44,6 +36,7 @@ type Props = {
 export default function Report({ api, matchId, report, names, onNames, focus, onFocus, onSeek }: Props) {
   const label = (pid: string) => playerLabel(pid, names);
   const known = report.points_with_ending;
+  const shorts = (report.shorts ?? []).filter((s) => !s.player);
   return (
     <>
       <section className="card">
@@ -163,6 +156,20 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
         onFocus={onFocus}
         onSeek={onSeek}
       />
+
+      {shorts.length > 0 && (
+        <section className="card">
+          <h2 style={{ marginBottom: 4 }}>Shorts</h2>
+          <p className="muted small" style={{ marginTop: 0 }}>
+            The best points as vertical videos, ready for a phone or to share.
+          </p>
+          <div className="shorts">
+            {shorts.map((s) => (
+              <ShortVideo key={s.file} api={api} matchId={matchId} short={s} title={withNames(s.title, names)} />
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }
@@ -262,27 +269,48 @@ function PlayerFocus({
           Pick a player to see their own highlight reel, best moments and numbers. The viewer above then follows them.
         </p>
       ) : (
-        <PlayerCard api={api} matchId={matchId} p={p} name={playerLabel(p.player, names)} onSeek={onSeek} />
+        <PlayerCard
+          key={p.player}
+          api={api}
+          matchId={matchId}
+          p={p}
+          name={playerLabel(p.player, names)}
+          names={names}
+          shorts={(report.shorts ?? []).filter((s) => s.player === p.player)}
+          onSeek={onSeek}
+        />
       )}
     </section>
   );
 }
+
+type Reel = "best" | "winners";
 
 export function PlayerCard({
   api,
   matchId,
   p,
   name,
+  names = {},
+  shorts = [],
   onSeek,
 }: {
   api: Api;
   matchId: string;
   p: PlayerReport;
   name: string;
+  names?: Record<string, string>; // for P1..P4 in short titles
+  shorts?: Short[]; // the player's own vertical shorts
   onSeek?: (t: number) => void;
 }) {
-  const kinds = Object.entries(p.shot_kinds) as [ShotKind, number][];
-  const most = Math.max(1, ...kinds.map(([, n]) => n));
+  const winners = p.winning_shots ?? [];
+  const [want, setWant] = useState<Reel>("best");
+  // The reel picked, if it was cut, else whichever one there is.
+  const reel: Reel | null =
+    want === "winners" && p.winners_reel ? "winners" : p.reel ? "best" : p.winners_reel ? "winners" : null;
+  const reelFile = reel === "winners" ? p.winners_reel : reel === "best" ? p.reel : null;
+  const moments = reel === "winners" ? winners : p.highlights;
+  const stats = p.shot_stats?.length ? p.shot_stats : statsFromKinds(p.shot_kinds, p.errors_by_kind);
   return (
     <div className="player-card">
       <div className="stats">
@@ -293,48 +321,125 @@ export function PlayerCard({
         <Stat label="Per point" value={`${Math.round(p.distance_per_point_m)} m`} />
         <Stat label="Top speed" value={`${(p.top_speed_mps * 3.6).toFixed(1)} km/h`} />
       </div>
-      {p.reel ? (
-        <video className="reel" controls preload="metadata" src={api.fileUrl(matchId, p.reel)} />
+      {reel && (
+        <div className="row">
+          <div className="segmented" role="group" aria-label={`${name}'s reels`}>
+            {p.reel && (
+              <button className={reel === "best" ? "on" : ""} onClick={() => setWant("best")}>
+                Best moments
+              </button>
+            )}
+            {p.winners_reel && (
+              <button className={reel === "winners" ? "on" : ""} onClick={() => setWant("winners")}>
+                Winners · {winners.length}
+              </button>
+            )}
+          </div>
+          <span className="muted small">
+            {reel === "winners"
+              ? "Every point they finished with a winner."
+              : "Winners, overheads and long points won, best first."}
+          </span>
+        </div>
+      )}
+      {reelFile ? (
+        <video key={reelFile} className="reel" controls preload="metadata" src={api.fileUrl(matchId, reelFile)} />
       ) : (
-        <p className="muted small">
+        <p className="muted small" style={{ margin: 0 }}>
           {p.highlights.length ? "No reel was cut for this player." : `No winners or overheads were found for ${name}.`}
         </p>
       )}
-      {kinds.length > 0 && (
-        <div className="kinds" aria-label={`${name}'s shots by kind`}>
-          {kinds.map(([k, n]) => (
-            <div key={k} className="kind">
-              <span>{KIND_LABELS[k] ?? k}</span>
-              <span className="bar">
-                <span style={{ width: `${(100 * n) / most}%`, background: PLAYER_COLORS[p.player] }} />
-              </span>
-              <span className="muted">{n}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {Object.keys(p.errors_by_kind).length > 0 && (
-        <p className="small muted">
-          Errors came from:{" "}
-          {Object.entries(p.errors_by_kind)
-            .map(([k, n]) => `${n} ${(KIND_LABELS[k as ShotKind] ?? k).toLowerCase()}`)
-            .join(", ")}
-          .
-        </p>
-      )}
-      {p.highlights.length > 0 && (
+      {moments.length > 0 && (
         <ul className="moments">
-          {p.highlights.map((m) => (
+          {moments.map((m) => (
             <Moment key={`${m.rally}-${m.time_s}`} m={m} onSeek={onSeek} />
           ))}
         </ul>
+      )}
+      {stats.length > 0 && <ShotTable stats={stats} focus={focusLine(p.strengths, p.weaknesses)} name={name} />}
+      {shorts.length > 0 && (
+        <div>
+          <h3 style={{ marginTop: 0 }}>Short</h3>
+          <div className="shorts">
+            {shorts.map((s) => (
+              <ShortVideo key={s.file} api={api} matchId={matchId} short={s} title={withNames(s.title, names)} />
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
+function ShotTable({ stats, focus, name }: { stats: ShotStat[]; focus: string; name: string }) {
+  const rated = stats.some((s) => s.rating);
+  return (
+    <div>
+      <h3 style={{ marginTop: 0 }}>Shots</h3>
+      {focus && (
+        <p className="small" style={{ margin: "0 0 4px" }}>
+          {focus}
+        </p>
+      )}
+      <div className="table-wrap">
+        <table className="shot-table" aria-label={`${name}'s shots by kind`}>
+          <thead>
+            <tr>
+              <th>Shot</th>
+              <th>Played</th>
+              <th>Kept in play</th>
+              <th>Winners</th>
+              <th>Errors</th>
+              {rated && <th className="rating">Rating</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map((s) => {
+              const badge = s.rating && <span className={`badge ${s.rating}`}>{RATING_LABELS[s.rating] ?? s.rating}</span>;
+              return (
+                <tr key={s.kind}>
+                  {/* On a phone the badge sits under the shot's name instead of in its own column. */}
+                  <td>
+                    {kindLabel(s.kind)}
+                    <span className="rating-inline">{badge}</span>
+                  </td>
+                  <td>{s.shots}</td>
+                  <td>{keptInPlay(s)}</td>
+                  <td>{s.winners}</td>
+                  <td>{s.errors}</td>
+                  {rated && <td className="rating">{badge}</td>}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small" style={{ margin: "6px 0 0" }}>
+        Kept in play means the other team had to play the ball back, or it won the point. A shot is rated once 5 of
+        them have a known outcome.
+      </p>
+    </div>
+  );
+}
+
+/** A vertical (9:16) short with its title and a download link. */
+export function ShortVideo({ api, matchId, short, title }: { api: Api; matchId: string; short: Short; title: string }) {
+  const url = api.fileUrl(matchId, short.file);
+  return (
+    <figure className="short">
+      <video controls playsInline preload="metadata" src={url} aria-label={title} />
+      <figcaption className="small">
+        <span>{title}</span>
+        <a href={url} download={short.file.split("/").pop()}>
+          Download
+        </a>
+      </figcaption>
+    </figure>
+  );
+}
+
 function Moment({ m, onSeek }: { m: PlayerMoment; onSeek?: (t: number) => void }) {
-  const text = `${MOMENT_LABELS[m.kind] ?? m.kind} · point ${m.rally + 1} · ${formatTime(m.time_s)}`;
+  const text = `${MOMENT_LABELS[m.kind] ?? kindLabel(m.kind)} · point ${m.rally + 1} · ${formatTime(m.time_s)}`;
   return (
     <li>
       {onSeek ? (
@@ -355,10 +460,6 @@ function Stat({ label, value }: { label: string; value: string | number }) {
       <span className="muted small">{label}</span>
     </div>
   );
-}
-
-function withNames(text: string, names: Record<string, string>): string {
-  return text.replace(/\bP[1-4]\b/g, (pid) => names[pid] ?? pid);
 }
 
 function pct(x: number | undefined): string {
