@@ -1,7 +1,7 @@
 """Ball tracking for a fixed camera, without a trained model.
 
 Runs during points only (the rallies the sound found), on frames shrunk to
-960 px wide:
+960 px wide, several points at a time:
 
 1. Motion: a pixel counts when it differs from both the previous and the
    next frame, so the still background and slow lighting changes vanish.
@@ -30,8 +30,10 @@ import bisect
 import csv
 import json
 import math
+import os
 import subprocess
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,7 +45,7 @@ from . import __version__, court
 from .calibration import Calibration
 from .config import BallConfig, EngineConfig
 from .schemas import BallSummary
-from .video import probe
+from .video import prefetch, probe
 
 ProgressFn = Callable[[float], None]
 Box = tuple[float, float, float, float]
@@ -319,13 +321,22 @@ def run_ball(
             merged.append([a, b])
     total = sum(b - a for a, b in merged) or 1.0
 
-    flights: list[Flight] = []
-    done_s = 0.0
-    for a, b in merged:
-        flights += tracker.track(read_frames(video_path, a, b, info.fps, tracker.size), boxes_at)
-        done_s += b - a
-        report(min(done_s / total, 0.99))
-    flights = one_per_frame(flights, cfg.min_points)
+    # Points are independent (each starts its own motion history), so several
+    # are tracked at once: OpenCV and FFmpeg use the other cores meanwhile.
+    def track_span(span: list[float]) -> list[Flight]:
+        a, b = span
+        return tracker.track(prefetch(read_frames(video_path, a, b, info.fps, tracker.size), 8), boxes_at)
+
+    workers = cfg.workers or max(1, min(4, (os.cpu_count() or 1) // 4))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ball") as pool:
+        futures = {pool.submit(track_span, span): span for span in merged}
+        done_s = 0.0
+        for fut in as_completed(futures):
+            fut.result()  # a failed point fails the run here
+            a, b = futures[fut]
+            done_s += b - a
+            report(min(done_s / total, 0.99))
+    flights = one_per_frame([fl for fut in futures for fl in fut.result()], cfg.min_points)
 
     points = sorted((p, k) for k, fl in enumerate(flights) for p in fl.points)
     found = [b for fl in flights for b in bounces(fl, tracker.scale, calib)]

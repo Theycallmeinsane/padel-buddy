@@ -18,6 +18,7 @@ import csv
 import json
 import math
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -26,10 +27,10 @@ import numpy as np
 from . import __version__, analytics, render
 from .calibration import Calibration
 from .config import EngineConfig
-from .detection import PersonTracker, YoloPersonTracker
+from .detection import PersonTracker, YoloPersonTracker, detect_batch
 from .players import PLAYER_IDS, TEAM_OF, Candidate, PlayerAssigner, appearance_of
 from .schemas import CalibrationMeta, PlayerStats, TrackingSummary, VideoMeta
-from .video import iter_frames, make_browser_friendly, probe, stride_for
+from .video import batched, iter_frames, make_browser_friendly, prefetch, probe, stride_for
 
 TRACK_COLUMNS = [
     "frame", "time_s", "player", "team", "track_id", "confidence",
@@ -68,40 +69,52 @@ def run_tracking(
     others: list[list] = []  # per analysed frame, people who are not players (preview only)
     analysed = 0
 
-    for frame_idx, t, frame in iter_frames(video_path, stride):
-        if analysed == 0:
-            cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
-            outputs["calibration_check"] = "calibration_check.jpg"
+    # The detector sees each frame shrunk to its inference size, done ahead in
+    # a background thread; shirt colours come from the full-size frame.
+    frames = prefetch(
+        ((i, t, f, _shrink(f, cfg.detector.image_size)) for i, t, f in iter_frames(video_path, stride)),
+        cfg.tracking.prefetch_frames,
+    )
+    for batch in batched(frames, cfg.detector.batch):
+        for (frame_idx, t, frame, small), found in zip(batch, detect_batch(tracker, [b[3] for b in batch])):
+            if analysed == 0:
+                cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
+                outputs["calibration_check"] = "calibration_check.jpg"
 
-        detections = tracker.update(frame)
-        court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
-        candidates = [
-            Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
-        ]
-        assigned = assigner.assign(t, candidates)
+            detections = found
+            if small is not frame:
+                sx, sy = frame.shape[1] / small.shape[1], frame.shape[0] / small.shape[0]
+                detections = [
+                    replace(d, bbox=(d.bbox[0] * sx, d.bbox[1] * sy, d.bbox[2] * sx, d.bbox[3] * sy)) for d in found
+                ]
+            court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
+            candidates = [
+                Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
+            ]
+            assigned = assigner.assign(t, candidates)
 
-        for pid, i in sorted(assigned.items()):
-            c = candidates[i]
-            row = {
-                "frame": frame_idx,
-                "time_s": round(t, 3),
-                "player": pid,
-                "team": TEAM_OF[pid],
-                "track_id": c.detection.track_id if c.detection.track_id is not None else "",
-                "confidence": round(c.detection.confidence, 3),
-                **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
-                "court_x": round(float(c.court_xy[0]), 3),
-                "court_y": round(float(c.court_xy[1]), 3),
-            }
-            rows.append(row)
-            segment_of.append(assigner.slots[pid].segment)
-        if preview:
-            taken = set(assigned.values())
-            others.append([d.bbox for j, d in enumerate(detections) if j not in taken])
+            for pid, i in sorted(assigned.items()):
+                c = candidates[i]
+                row = {
+                    "frame": frame_idx,
+                    "time_s": round(t, 3),
+                    "player": pid,
+                    "team": TEAM_OF[pid],
+                    "track_id": c.detection.track_id if c.detection.track_id is not None else "",
+                    "confidence": round(c.detection.confidence, 3),
+                    **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
+                    "court_x": round(float(c.court_xy[0]), 3),
+                    "court_y": round(float(c.court_xy[1]), 3),
+                }
+                rows.append(row)
+                segment_of.append(assigner.slots[pid].segment)
+            if preview:
+                taken = set(assigned.values())
+                others.append([d.bbox for j, d in enumerate(detections) if j not in taken])
 
-        analysed += 1
-        if on_progress and analysed % 25 == 0:
-            on_progress(min(share * analysed / total, 0.99))
+            analysed += 1
+            if on_progress and analysed % 25 == 0:
+                on_progress(min(share * analysed / total, 0.99))
 
     # Who is who is only settled once the repair has seen the whole match, so
     # every output is written from here on.
@@ -146,6 +159,19 @@ def run_tracking(
     if on_progress:
         on_progress(1.0)
     return summary
+
+
+def _shrink(frame: np.ndarray, image_size: int) -> np.ndarray:
+    """The frame at the detector's inference size (longer side), never enlarged.
+
+    The detector would shrink it anyway; doing it here moves that work off
+    the GPU's critical path into the prefetch thread.
+    """
+    h, w = frame.shape[:2]
+    scale = image_size / max(w, h)
+    if scale >= 1:
+        return frame
+    return cv2.resize(frame, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
 
 
 def _write_preview(

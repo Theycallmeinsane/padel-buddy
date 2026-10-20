@@ -23,11 +23,20 @@ class DetectorConfig(BaseModel):
     )
     device: str | None = Field(None, description="'cpu', 'cuda:0', 'mps' or None for auto")
     tracker: str = Field("bytetrack.yaml", description="Ultralytics tracker config")
+    half: bool = Field(
+        True, description="Half precision (FP16) on an NVIDIA GPU: faster, same detections. Ignored on the CPU."
+    )
+    batch: int = Field(
+        8, ge=1, description="Frames sent to the GPU together. Tracking still sees them one by one, in order."
+    )
 
 
 class TrackingConfig(BaseModel):
     process_fps: float = Field(
         10.0, gt=0, description="Frames per second analysed; the rest are skipped."
+    )
+    prefetch_frames: int = Field(
+        16, ge=0, description="Frames decoded and resized ahead in a background thread while the GPU works."
     )
     court_margin_m: float = Field(
         0.5, ge=0, description="How far outside the court lines a player already being followed is still followed."
@@ -190,6 +199,9 @@ class ClipsConfig(BaseModel):
 
     # Encoding
     video_crf: int = Field(23, ge=0, le=51, description="x264 quality; lower is better and bigger.")
+    video_encoder: Literal["auto", "libx264", "h264_nvenc"] = Field(
+        "auto", description="H.264 encoder for every clip and reel. 'auto' uses the NVIDIA encoder when there is one."
+    )
     thumbnails: bool = True
 
 
@@ -216,6 +228,9 @@ class BallConfig(BaseModel):
     min_travel_px: float = Field(25.0, ge=0)
     max_step_px: float = Field(60.0, gt=0, description="Larger jumps between frames are not one ball.")
     max_wobble_px: float = Field(4.0, gt=0, description="Median change of velocity; a ball flies smoothly.")
+    workers: int = Field(
+        0, ge=0, description="Points tracked at the same time, each in its own thread; 0 picks from the CPU count."
+    )
     ignore_regions: list[list[tuple[float, float]]] = Field(
         [], description="Polygons, in the calibration image's pixels, where motion is never the ball: "
         "a neighbouring court seen through the glass, spectators, a scoreboard.",

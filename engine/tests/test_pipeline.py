@@ -102,3 +102,58 @@ def test_smoothing_removes_far_side_jitter():
     raw_d = analytics.movement(analytics.Trajectory(t, noisy), cfg, 8)["distance_m"]
     smooth_d = analytics.movement(s, cfg, 8)["distance_m"]
     assert abs(smooth_d - true_d) < 0.25 * abs(raw_d - true_d)
+
+
+class ShrinkAware:
+    """The scripted tracker as a real detector sees it: boxes in the pixels of the frame it was given."""
+
+    def __init__(self, inner: ScriptedTracker):
+        self.inner = inner
+        self.widths: list[int] = []
+        self.batches: list[int] = []
+
+    def update_batch(self, frames):
+        self.batches.append(len(frames))
+        out = []
+        for f in frames:
+            self.widths.append(f.shape[1])
+            s = f.shape[1] / W
+            out.append([
+                type(d)(bbox=tuple(v * s for v in d.bbox), confidence=d.confidence, track_id=d.track_id)
+                for d in self.inner.update(f)
+            ])
+        return out
+
+
+def test_shrunk_batched_frames_give_the_same_tracks(tmp_path):
+    """The detector gets frames at its inference size, in batches; tracks.csv stays in video pixels."""
+    cam = Camera()
+    gt = paths(6.0, SRC_FPS)
+    video = tmp_path / "match.mp4"
+    make_video(video, cam, gt)
+    calib = Calibration.from_points(
+        {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
+         ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
+        (W, H),
+    )
+    stride = round(SRC_FPS / EngineConfig().tracking.process_fps)
+
+    def tracks(image_size: int, batch: int, prefetch: int):
+        cfg = EngineConfig.model_validate(
+            {"detector": {"image_size": image_size, "batch": batch}, "tracking": {"prefetch_frames": prefetch}}
+        )
+        tracker = ShrinkAware(ScriptedTracker(cam, gt, stride=stride, fps=SRC_FPS))
+        run = tmp_path / f"run_{image_size}_{batch}"
+        run_tracking(video, calib, run, cfg, tracker=tracker)
+        with open(run / "tracks.csv") as fh:
+            return list(csv.DictReader(fh)), tracker
+
+    full, at_full = tracks(1280, 1, 0)
+    small, at_small = tracks(640, 8, 4)
+    assert set(at_full.widths) == {W} and set(at_small.widths) == {640}
+    assert at_full.batches[0] == 1 and at_small.batches[0] == 8
+    assert len(full) == len(small)
+    for a, b in zip(full, small):
+        assert (a["frame"], a["player"], a["track_id"]) == (b["frame"], b["player"], b["track_id"])
+        for k in ("x1", "y1", "x2", "y2", "court_x", "court_y"):
+            assert float(a[k]) == pytest.approx(float(b[k]), abs=0.11), k
