@@ -100,7 +100,9 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    model (10 × 20 m, service lines 6.95 m from the net), so a tilted or
    off-centre camera is fine.
 2. **Detection** runs YOLO (person class) with ByteTrack every
-   `1 / process_fps` seconds (10 fps by default).
+   `1 / process_fps` seconds (10 fps by default). Frames are decoded and
+   shrunk to the detector's size in a background thread, and sent to the GPU
+   8 at a time in half precision; ByteTrack still sees them one by one.
 3. **Player assignment** projects each person's feet onto the court, merges
    two boxes on one person, and keeps four stable player slots by matching on
    court position (gated by a maximum running speed), shirt colour, and the
@@ -217,6 +219,26 @@ of the image you calibrated on):
 ```json
 {"ball": {"ignore_regions": [[[0, 540], [690, 540], [705, 633], [0, 930]]]}}
 ```
+
+## Speed
+
+Player tracking is the longest stage, because the detector runs on 10
+frames of every second; encoding clips and reels and tracking the ball come
+next. These settings are on by default and change no results:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `detector.batch` | 8 | Frames sent to the GPU together; ByteTrack still updates frame by frame |
+| `detector.half` | true | FP16 inference on an NVIDIA GPU (ignored on the CPU) |
+| `tracking.prefetch_frames` | 16 | Frames decoded and shrunk ahead in a background thread while the GPU works |
+| `ball.workers` | 0 (auto) | Points tracked at the same time; auto is a quarter of the CPU threads, at most 4 |
+| `clips.video_encoder` | auto | NVENC (`h264_nvenc`) when the GPU and FFmpeg support it, else x264 |
+
+These trade accuracy for more speed, so test them on your own footage first:
+`tracking.process_fps` (10), `detector.image_size` (1280; 960 is about 1.5
+times faster on an RTX 3050 but may miss small far-side players) and
+`detector.model` (`yolo11n.pt` is faster, `yolo11m.pt` slower and more
+reliable).
 
 ## Tests
 
