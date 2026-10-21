@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from . import court
+from .video import h264_args
 
 
 def court_columns(overlay: dict, margin: float = 0.08) -> tuple[float, float] | None:
@@ -47,21 +48,25 @@ def cut_vertical(
     columns: tuple[float, float] | None = None,
     height: int = 1280,
     crf: int = 23,
+    encoder: str = "auto",
 ) -> Path:
     from .clips import _ffmpeg
 
     width = int(round(height * 9 / 16 / 2)) * 2
     crop = f"crop=iw*{columns[1]:.4f}:ih:iw*{columns[0]:.4f}:0," if columns else ""
+    # The background is blurred at a quarter of the size and scaled back up:
+    # the same look for a sixteenth of the work.
+    qw, qh = width // 8 * 2, height // 8 * 2
     graph = (
         f"[0:v]split[a][b];"
-        f"[a]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},boxblur=20:2[bg];"
+        f"[a]scale={qw}:{qh}:force_original_aspect_ratio=increase,crop={qw}:{qh},boxblur=5:2,"
+        f"scale={width}:{height}[bg];"
         f"[b]{crop}scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
     )
     _ffmpeg(
         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
-        "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+        "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?", *h264_args(crf, encoder),
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(dest),
     )
     return dest

@@ -443,7 +443,10 @@ def _cut_player_reels(report: MatchReport, video_path, out: Path, cfg: EngineCon
     if jobs:
         (out / "players").mkdir(exist_ok=True)
     for i, (moments, name) in enumerate(jobs, start=1):
-        reel(video_path, reel_spans(moments), out / name, cfg.clips.video_crf, height=cfg.report.player_reel_height)
+        reel(
+            video_path, reel_spans(moments), out / name, cfg.clips.video_crf,
+            height=cfg.report.player_reel_height, encoder=cfg.clips.video_encoder,
+        )
         progress(i / len(jobs))
 
 
@@ -471,6 +474,9 @@ def _cut_shorts(
     (out / "shorts").mkdir(exist_ok=True)
     columns = court_columns(overlay)
     for i, s in enumerate(planned, start=1):
-        cut_vertical(video_path, s.start_s, s.end_s, out / s.file, columns, rc.short_height, cfg.clips.video_crf)
+        cut_vertical(
+            video_path, s.start_s, s.end_s, out / s.file, columns, rc.short_height, cfg.clips.video_crf,
+            cfg.clips.video_encoder,
+        )
         progress(i / len(planned))
     return [s.model_copy(update={"start_s": round(s.start_s, 2), "end_s": round(s.end_s, 2)}) for s in planned]

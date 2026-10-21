@@ -53,6 +53,11 @@ Design choices:
   camera but tens of centimetres at the far wall. The homography's Jacobian
   turns pixel jitter into per-point uncertainty, and a Kalman smoother uses
   it, so far-side distances are not inflated by noise.
+- **Keep the GPU busy.** Tracking decodes and shrinks frames in a background
+  thread and sends them to the detector 8 at a time in half precision; the
+  ball tracker works on several points at once; clips are encoded with NVENC
+  when there is an NVIDIA GPU. None of it changes results (see "Speed" in
+  [engine/README.md](../engine/README.md)).
 - **Run folders.** Every run writes to one folder (`tracks.csv`,
   `summary.json`, images, preview). Locally that is a directory; in the
   cloud the worker uploads the same folder to storage.

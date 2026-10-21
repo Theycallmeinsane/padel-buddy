@@ -98,3 +98,17 @@ def test_ignored_regions_hide_motion(tmp_path):
     cfg = EngineConfig.model_validate({"ball": {"ignore_regions": [[(0, 0), (W, 0), (W, H), (0, H)]]}})
     summary = run_ball(video, calibration(cam), tmp_path / "run", [(0.6, 2.6)], tracks, cfg)
     assert summary.ball_frames == 0 and summary.bounces == 0
+
+
+@needs_ffmpeg
+def test_points_tracked_at_once_match_one_at_a_time(tmp_path):
+    cam = Camera()
+    video, tracks, _ = make_match(tmp_path, cam)
+    spans = [(0.5, 1.4), (1.6, 2.7)]
+    out = {}
+    for workers in (1, 2):
+        cfg = EngineConfig.model_validate({"ball": {"workers": workers, "span_pad_s": 0.0}})
+        run_ball(video, calibration(cam), tmp_path / f"run{workers}", spans, tracks, cfg)
+        out[workers] = json.loads((tmp_path / f"run{workers}" / "ball_track.json").read_text())
+    assert len(out[1]["spans"]) == 2 and out[1]["t"]
+    assert out[1] == out[2]

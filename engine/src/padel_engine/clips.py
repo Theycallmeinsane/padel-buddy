@@ -24,7 +24,7 @@ from pathlib import Path
 from . import __version__, audio, events
 from .config import EngineConfig
 from .schemas import ClipInfo, ClipsSummary, MomentInfo, RallyInfo, VideoMeta
-from .video import probe
+from .video import h264_args, probe
 
 ProgressFn = Callable[[float], None]
 
@@ -64,7 +64,7 @@ def run_clips(
     clips: list[ClipInfo] = []
     for i, w in enumerate(windows, start=1):
         name = f"clips/clip_{i:03d}.mp4"
-        cut(video_path, w.start, w.end, out / name, cfg.clips.video_crf)
+        cut(video_path, w.start, w.end, out / name, cfg.clips.video_crf, encoder=cfg.clips.video_encoder)
         thumb = None
         if cfg.clips.thumbnails:
             thumb = f"clips/clip_{i:03d}.jpg"
@@ -82,7 +82,10 @@ def run_clips(
     highlights = None
     if segments:
         highlights = "highlights.mp4"
-        reel(video_path, [(s.start, s.end) for s in segments], out / highlights, cfg.clips.video_crf)
+        reel(
+            video_path, [(s.start, s.end) for s in segments], out / highlights, cfg.clips.video_crf,
+            encoder=cfg.clips.video_encoder,
+        )
         outputs["highlights"] = highlights
     report(0.65)
     condensed_file = None
@@ -98,12 +101,15 @@ def run_clips(
         condensed_offsets = reel(
             video_path, [(s.start, s.end) for s in condensed], out / condensed_file, cfg.clips.video_crf,
             height=cfg.clips.condensed_height, on_part=lambda f: report(0.65 + 0.35 * f),
-            keep_parts=[out / f for f in point_files] or None,
+            keep_parts=[out / f for f in point_files] or None, encoder=cfg.clips.video_encoder,
         )
         outputs["condensed"] = condensed_file
     elif point_files:
         for i, (s, f) in enumerate(zip(point_segments, point_files), start=1):
-            cut(video_path, s.start, s.end, out / f, cfg.clips.video_crf, cfg.clips.condensed_height)
+            cut(
+                video_path, s.start, s.end, out / f, cfg.clips.video_crf, cfg.clips.condensed_height,
+                cfg.clips.video_encoder,
+            )
             report(0.65 + 0.35 * i / len(point_files))
     clip_of = {r: f for s, f in zip(point_segments, point_files) for r in s.rallies}
 
@@ -147,12 +153,18 @@ def run_clips(
 
 
 def cut(
-    video: str | Path, start: float, end: float, dest: Path, crf: int = 23, height: int | None = None
+    video: str | Path,
+    start: float,
+    end: float,
+    dest: Path,
+    crf: int = 23,
+    height: int | None = None,
+    encoder: str = "auto",
 ) -> Path:
     """Frame-accurate cut, re-encoded to H.264/AAC for any browser or phone."""
     _ffmpeg(
         "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
-        *_encode_args(crf, height), str(dest),
+        *_encode_args(crf, height, encoder), str(dest),
     )
     return dest
 
@@ -165,6 +177,7 @@ def reel(
     height: int | None = None,
     on_part: Callable[[float], None] | None = None,
     keep_parts: list[Path] | None = None,
+    encoder: str = "auto",
 ) -> list[float]:
     """Cut each span and join them; parts share encoder settings, so joining is lossless.
 
@@ -179,7 +192,7 @@ def reel(
         at = 0.0
         for i, (a, b) in enumerate(spans):
             part = Path(tmp) / f"part_{i:04d}.mp4"
-            cut(video, a, b, part, crf, height)
+            cut(video, a, b, part, crf, height, encoder)
             parts.append(part)
             offsets.append(at)
             at += media_duration(part)
@@ -211,11 +224,10 @@ def thumbnail(video: str | Path, at: float, dest: Path, width: int = 480) -> Pat
     return dest
 
 
-def _encode_args(crf: int, height: int | None = None) -> list[str]:
+def _encode_args(crf: int, height: int | None = None, encoder: str = "auto") -> list[str]:
     scale = ["-vf", f"scale=-2:'min(ih,{height})'"] if height else []
     return [
-        "-map", "0:v:0", "-map", "0:a:0?", *scale,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
+        "-map", "0:v:0", "-map", "0:a:0?", *scale, *h264_args(crf, encoder),
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
     ]
