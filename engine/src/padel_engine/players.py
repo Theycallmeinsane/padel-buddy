@@ -149,9 +149,7 @@ class PlayerAssigner:
         """Match candidates at ``time_s`` to players. Returns player id -> candidate index."""
         boxes = [c.detection.bbox for c in candidates]
         distinct = distinct_people(boxes, self.cfg.duplicate_overlap, self.cfg.duplicate_area_ratio)
-        on_court = [
-            i for i in distinct if court.inside(*candidates[i].court_xy, margin=self.cfg.court_margin_m)
-        ]
+        on_court = [i for i in distinct if self._on_court(candidates[i].court_xy)]
         in_lines = {i for i in on_court if self._in_lines(candidates[i].court_xy)}
         for slot in self.slots.values():
             if slot.outside_since is not None and time_s - slot.outside_since >= self.cfg.outside_release_s:
@@ -196,6 +194,14 @@ class PlayerAssigner:
         """
         limit = self.cfg.contact_m * (1.5 if self.slots[pid].contact else 1.0)
         return any(float(np.linalg.norm(xy - where[pid])) < limit for o, xy in where.items() if o != pid)
+
+    def _on_court(self, xy: np.ndarray) -> bool:
+        """Where a player already followed is still followed: the court, and round the net posts to change ends."""
+        cfg = self.cfg
+        x, y = float(xy[0]), float(xy[1])
+        return court.inside(x, y, margin=cfg.court_margin_m) or court.by_net_post(
+            x, y, cfg.net_round_across_m, cfg.net_round_along_m
+        )
 
     def _in_lines(self, xy: np.ndarray) -> bool:
         cfg = self.cfg

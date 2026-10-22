@@ -2,6 +2,7 @@ from collections import Counter
 from itertools import count
 
 import numpy as np
+import pytest
 
 from padel_engine import court
 from padel_engine.calibration import Calibration
@@ -228,13 +229,14 @@ def test_people_in_the_doorways_by_the_net_posts_are_not_players():
     assert 85 <= inside <= 87  # the walk is on court, the doorway is not
 
 
-def test_a_track_is_cut_where_its_person_walks_round_the_net():
+@pytest.mark.parametrize("post_x", [0.2, -1.3])  # through the doorway, or outside the side glass
+def test_a_track_is_cut_where_its_person_walks_round_the_net(post_x):
     """At a changeover P1 walks from the near half round the left net post to the far one; the tracker keeps them."""
     red, blue = colour(0), colour(12)
     a = PlayerAssigner(TrackingConfig())
     for t in times(0, 6):
         y = 6.0 + max(0.0, t - 1.0) * 1.6  # 6 m to 14 m from the near wall
-        x = 2.0 - 1.8 * max(0.0, 1.0 - abs(y - court.NET_Y) / 2.5)  # out to the post (0.2 m in) and back
+        x = 2.0 - (2.0 - post_x) * max(0.0, 1.0 - abs(y - court.NET_Y) / 2.5)  # out to the post and back in
         a.assign(t, [cand(x, y, red, 1), cand(8.0, 16.0, blue, 2)])
     p1 = [s for s in a.segments if s.player_id == "P1"]
     assert [(s.side, s.crossed) for s in p1] == [("near", False), ("far", True)]

@@ -120,7 +120,8 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    tracker's id. People watching stand just outside the glass, by the net
    posts and the side fences, so only someone inside the lines can become a
    player, a player is followed off court only while the tracker keeps the
-   same id, and one followed outside the lines for 4 s is let go. The
+   same id (just past the lines, or out round a net post to change ends),
+   and one followed outside the lines for 4 s is let go. The
    doorways by the net posts count as off court (0.6 m in from the side
    lines, 1.5 m either side of the net): people waiting to play, fetching
    balls or watching stand in them, often just inside the lines.

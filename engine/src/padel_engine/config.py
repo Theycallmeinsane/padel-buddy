@@ -39,7 +39,10 @@ class TrackingConfig(BaseModel):
         16, ge=0, description="Frames decoded and resized ahead in a background thread while the GPU works."
     )
     court_margin_m: float = Field(
-        0.5, ge=0, description="How far outside the court lines a player already being followed is still followed."
+        0.5,
+        ge=0,
+        description="How far outside the court lines a player already being followed is still followed; by the "
+        "net posts, where players walk out round them to change ends, net_round_across_m.",
     )
     side_tolerance_m: float = Field(
         0.1,
@@ -68,7 +71,7 @@ class TrackingConfig(BaseModel):
         1.5,
         ge=0,
         description="Nobody gets to the other half except round a net post, so a track is only cut at the net "
-        "where its person is this close to a side line (or past it), within net_round_along_m of the net. "
+        "where its person is this close to a side line (either side of it), within net_round_along_m of the net. "
         "Anywhere else it is a far player at the net: it hides their feet, so they are placed up to a metre "
         "in front of it.",
     )
