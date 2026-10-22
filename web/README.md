@@ -47,6 +47,13 @@ and each point on the timeline is edged in the colour of the team that won it.
 The original video only plays where the browser supports its codec (iPhone
 HEVC often doesn't), so points-only is the default.
 
+**Live results.** With a calibrated court, results appear while the match is
+analysed: every point within a minute or two, then the viewer's overlay,
+player stats, heatmaps, shots and the report's numbers every few minutes, as
+far as the analysis has got. A note under the progress bar says how far that
+is. The best points, reels and shorts appear when it finishes. If an analysis
+fails, what it had found stays on the page.
+
 **Naming players.** After calibrating, **Name players** shows a frame: click
 each player and type their name, and the names follow them through the whole
 analysis. While watching, **Name a player** lets you click anyone at any

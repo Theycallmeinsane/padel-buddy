@@ -46,8 +46,8 @@ git-ignored. Settings come from environment variables or `.env`; see
 | `GET` | `/matches/{id}/frame?t=5` | A still frame (JPEG) to click the court on |
 | `PUT` | `/matches/{id}/calibration` | Clicked court points; enables player tracking |
 | `POST` | `/matches/{id}/analyze` | Queue analysis, optionally with engine setting overrides |
-| `GET` | `/matches/{id}` | Status and job progress |
-| `GET` | `/matches/{id}/results` | Every summary at once: tracking, clips, ball, shots and the match report |
+| `GET` | `/matches/{id}` | Status and job progress; while analysing, `live` says how far the results so far reach |
+| `GET` | `/matches/{id}/results` | Every summary at once: tracking, clips, ball, shots and the match report (so far, while analysing) |
 | `GET` | `/matches/{id}/report.md` | The match report as Markdown, with the players' names |
 | `PUT` | `/matches/{id}/players` | Name the players: `{"names": {"P1": "Maya", "P3": "Sara"}}`; an empty name clears one |
 | `POST` | `/matches/{id}/tags` | Name the person at a spot in the video: `{"time_s", "x", "y", "name", "player"}` (source pixels; `player` is the box clicked, if any). Before analysis it waits for it; after, a plain name is applied at once and a mix-up queues a relabel job |

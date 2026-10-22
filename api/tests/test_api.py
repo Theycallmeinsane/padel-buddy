@@ -479,3 +479,36 @@ def test_a_match_s_jobs_run_one_at_a_time(client, settings, tmp_path):
         jobs.finish(a, first)
         assert a.get(type(first.match), m["id"]).status == "queued"  # the relabel is next
         assert jobs.claim_next(b, "two").kind == "relabel"
+
+
+def test_results_so_far_are_served_while_analysing_and_after_a_failure(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+    client.post(f"/matches/{mid}/analyze")
+    seen = []
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "clips.json").write_text(json.dumps({"rallies": [{"index": 0}, {"index": 1}], "clips": []}))
+        (run_dir / "live.json").write_text(json.dumps({"covered_s": 300.0, "duration_s": 5400.0, "done": False}))
+        on_progress(0.2)
+        seen.append((client.get(f"/matches/{mid}").json(), client.get(f"/matches/{mid}/results").json()))
+        raise RuntimeError("power cut")
+
+    worker.run_once(Database(settings.db_url), LocalStorage(settings.data_dir), "test", engine)
+    match, results = seen[0]
+    assert match["status"] == "processing" and match["live"] == {"covered_s": 300.0, "duration_s": 5400.0}
+    assert len(results["clips"]["rallies"]) == 2
+    # The analysis failed, but what it published stays readable.
+    match = client.get(f"/matches/{mid}").json()
+    assert match["status"] == "failed" and match["live"]["covered_s"] == 300.0
+    assert len(client.get(f"/matches/{mid}/results").json()["clips"]["rallies"]) == 2
+
+    def finished(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "live.json").write_text(json.dumps({"covered_s": 5400.0, "duration_s": 5400.0, "done": True}))
+
+    client.post(f"/matches/{mid}/analyze")
+    worker.run_once(Database(settings.db_url), LocalStorage(settings.data_dir), "test", finished)
+    match = client.get(f"/matches/{mid}").json()
+    assert match["status"] == "done" and match["live"] is None

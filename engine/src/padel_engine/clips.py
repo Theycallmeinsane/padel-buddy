@@ -18,15 +18,77 @@ import csv
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import __version__, audio, events
+from . import __version__, audio, events, files
 from .config import EngineConfig
 from .schemas import ClipInfo, ClipsSummary, MomentInfo, RallyInfo, VideoMeta
-from .video import h264_args, probe
+from .video import VideoInfo, h264_args, probe
 
 ProgressFn = Callable[[float], None]
+
+
+@dataclass
+class Heard:
+    """What the sound says about a match: every hit, and the loudness behind the rallies."""
+
+    info: VideoInfo
+    duration: float
+    feat: audio.AudioFeatures
+    hits: audio.Hits
+
+
+def listen(video_path: str | Path, out_dir: str | Path, config: EngineConfig | None = None) -> Heard:
+    """Find every hit in the sound and write hits.csv; the rallies follow from these alone."""
+    cfg = config or EngineConfig()
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    info = probe(video_path)
+    feat = audio.features(audio.iter_audio(video_path), cfg.audio)
+    duration = max(info.duration_s, float(feat.times[-1]) if len(feat.times) else 0.0)
+    hits = audio.detect_hits(feat, cfg.audio)
+    _write_hits(out / "hits.csv", hits)
+    return Heard(info, duration, feat, hits)
+
+
+def point_parts(rallies: list[events.Rally], duration: float, cfg: EngineConfig) -> list[tuple[events.Window, str]]:
+    """Each point's own clip (points close together share one) and its file; the condensed match joins them."""
+    if not cfg.clips.point_clips:
+        return []
+    return [(s, f"points/point_{s.rallies[0] + 1:03d}.mp4") for s in events.condensed_segments(rallies, duration, cfg.clips)]
+
+
+def cut_part(video_path: str | Path, out_dir: str | Path, window: events.Window, name: str, cfg: EngineConfig) -> Path:
+    dest = Path(out_dir) / name
+    dest.parent.mkdir(exist_ok=True)
+    return cut(video_path, window.start, window.end, dest, cfg.clips.video_crf, cfg.clips.condensed_height,
+               cfg.clips.video_encoder)
+
+
+def write_points(
+    video_path: str | Path, out_dir: str | Path, heard: Heard, config: EngineConfig | None = None,
+    made: Collection[str] = (),
+) -> ClipsSummary:
+    """clips.json with the points alone, before tracking has ranked them; ``made`` are point clips already cut."""
+    cfg = config or EngineConfig()
+    rallies, timeline = events.find_rallies(heard.hits, heard.feat, cfg.clips)
+    clip_of = {r: f for s, f in point_parts(rallies, heard.duration, cfg) if f in made for r in s.rallies}
+    summary = ClipsSummary(
+        engine_version=__version__,
+        video=_video_meta(video_path, heard),
+        hits=len(heard.hits.times),
+        play_level_db=round(timeline.play_level_db, 1),
+        rallies=_rally_infos(rallies, clip_of),
+        moments=[],
+        clips=[],
+        highlights=None,
+        highlight_segments=[],
+        outputs={"hits": "hits.csv", "clips": "clips.json", **({"points": "points"} if clip_of else {})},
+    )
+    files.write_text(Path(out_dir) / "clips.json", summary.model_dump_json(indent=2))
+    return summary
 
 
 def run_clips(
@@ -35,19 +97,17 @@ def run_clips(
     config: EngineConfig | None = None,
     tracks_csv: str | Path | None = None,
     on_progress: ProgressFn | None = None,
+    heard: Heard | None = None,
+    made: Collection[str] = (),
 ) -> ClipsSummary:
+    """Points, clips and reels. ``heard`` saves listening again; point clips named in ``made`` are already cut."""
     cfg = config or EngineConfig()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    info = probe(video_path)
-    duration = info.duration_s
     report = on_progress or (lambda p: None)
-
-    feat = audio.features(audio.iter_audio(video_path), cfg.audio)
-    duration = max(duration, float(feat.times[-1]) if len(feat.times) else 0.0)
+    heard = heard or listen(video_path, out, cfg)
+    duration, feat, hits = heard.duration, heard.feat, heard.hits
     report(0.3)
-    hits = audio.detect_hits(feat, cfg.audio)
-    _write_hits(out / "hits.csv", hits)
 
     activity = events.activity_from_tracks(tracks_csv) if tracks_csv else None
     rallies, timeline = events.find_rallies(hits, feat, cfg.clips, activity)
@@ -91,8 +151,8 @@ def run_clips(
     condensed_file = None
     condensed_offsets: list[float] = []
     # Every point on its own; the condensed match is these parts joined, so they cost no extra encoding.
-    point_segments = condensed or events.condensed_segments(rallies, duration, cfg.clips)
-    point_files = [f"points/point_{s.rallies[0] + 1:03d}.mp4" for s in point_segments] if cfg.clips.point_clips else []
+    parts = point_parts(rallies, duration, cfg)
+    point_files = [f for _, f in parts]
     if point_files:
         (out / "points").mkdir(exist_ok=True)
         outputs["points"] = "points"
@@ -102,34 +162,22 @@ def run_clips(
             video_path, [(s.start, s.end) for s in condensed], out / condensed_file, cfg.clips.video_crf,
             height=cfg.clips.condensed_height, on_part=lambda f: report(0.65 + 0.35 * f),
             keep_parts=[out / f for f in point_files] or None, encoder=cfg.clips.video_encoder,
+            made=[out / f for f in made],
         )
         outputs["condensed"] = condensed_file
-    elif point_files:
-        for i, (s, f) in enumerate(zip(point_segments, point_files), start=1):
-            cut(
-                video_path, s.start, s.end, out / f, cfg.clips.video_crf, cfg.clips.condensed_height,
-                cfg.clips.video_encoder,
-            )
-            report(0.65 + 0.35 * i / len(point_files))
-    clip_of = {r: f for s, f in zip(point_segments, point_files) for r in s.rallies}
+    else:
+        for i, (s, f) in enumerate(parts, start=1):
+            if f not in made:
+                cut_part(video_path, out, s, f, cfg)
+            report(0.65 + 0.35 * i / len(parts))
+    clip_of = {r: f for s, f in parts for r in s.rallies}
 
     summary = ClipsSummary(
         engine_version=__version__,
-        video=VideoMeta(
-            path=str(video_path), width=info.width, height=info.height,
-            fps=info.fps, frame_count=info.frame_count, duration_s=duration,
-        ),
+        video=_video_meta(video_path, heard),
         hits=len(hits.times),
         play_level_db=round(timeline.play_level_db, 1),
-        rallies=[
-            RallyInfo(
-                index=r.index, start_s=round(r.start, 2), end_s=round(r.end, 2), hits=r.hits,
-                peak_excess_db=round(r.peak_excess_db, 1),
-                movement_mps=None if r.movement_mps is None else round(r.movement_mps, 2),
-                score=round(r.score, 3), clip=clip_of.get(r.index),
-            )
-            for r in rallies
-        ],
+        rallies=_rally_infos(rallies, clip_of),
         moments=[
             MomentInfo(time_s=round(m.time, 2), excess_db=round(m.excess_db, 1), rally=m.rally, score=round(m.score, 2))
             for m in moments
@@ -144,9 +192,29 @@ def run_clips(
         ],
         outputs=outputs,
     )
-    (out / "clips.json").write_text(summary.model_dump_json(indent=2))
+    files.write_text(out / "clips.json", summary.model_dump_json(indent=2))
     report(1.0)
     return summary
+
+
+def _video_meta(video_path: str | Path, heard: Heard) -> VideoMeta:
+    info = heard.info
+    return VideoMeta(
+        path=str(video_path), width=info.width, height=info.height,
+        fps=info.fps, frame_count=info.frame_count, duration_s=heard.duration,
+    )
+
+
+def _rally_infos(rallies: list[events.Rally], clip_of: dict[int, str]) -> list[RallyInfo]:
+    return [
+        RallyInfo(
+            index=r.index, start_s=round(r.start, 2), end_s=round(r.end, 2), hits=r.hits,
+            peak_excess_db=round(r.peak_excess_db, 1),
+            movement_mps=None if r.movement_mps is None else round(r.movement_mps, 2),
+            score=round(r.score, 3), clip=clip_of.get(r.index),
+        )
+        for r in rallies
+    ]
 
 
 # -- ffmpeg -------------------------------------------------------------------
@@ -178,21 +246,25 @@ def reel(
     on_part: Callable[[float], None] | None = None,
     keep_parts: list[Path] | None = None,
     encoder: str = "auto",
+    made: Collection[Path] = (),
 ) -> list[float]:
     """Cut each span and join them; parts share encoder settings, so joining is lossless.
 
     Returns where each span starts in the joined video. Each cut comes out a
     few milliseconds off its nominal length (whole frames, audio priming), so
     over hundreds of points only the measured lengths keep the app's overlays
-    in sync. With ``keep_parts`` (one path per span), each part is kept there.
+    in sync. With ``keep_parts`` (one path per span), each part is kept there;
+    a part already cut there with the same settings is listed in ``made``.
     """
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         parts = []
         offsets = []
         at = 0.0
         for i, (a, b) in enumerate(spans):
-            part = Path(tmp) / f"part_{i:04d}.mp4"
-            cut(video, a, b, part, crf, height, encoder)
+            keep = keep_parts[i] if keep_parts else None
+            part = keep if keep is not None and keep in made else Path(tmp) / f"part_{i:04d}.mp4"
+            if part is not keep:
+                cut(video, a, b, part, crf, height, encoder)
             parts.append(part)
             offsets.append(at)
             at += media_duration(part)
@@ -203,7 +275,8 @@ def reel(
         listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
         _ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(dest))
         for part, keep in zip(parts, keep_parts or []):
-            shutil.move(part, keep)
+            if part != keep:
+                shutil.move(part, keep)
     return offsets
 
 

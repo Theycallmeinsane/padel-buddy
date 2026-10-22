@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Calibrator from "@/components/Calibrator";
 import MatchViewer from "@/components/MatchViewer";
 import Report from "@/components/Report";
@@ -10,7 +10,7 @@ import Results from "@/components/Results";
 import { PlayerTagger } from "@/components/Tags";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
 import { Api, ApiError, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
-import { suggestions } from "@/lib/tags";
+import { liveNames, suggestions } from "@/lib/tags";
 
 // Static export can't pre-render one page per match, so the id is a query
 // parameter: /match/?id=...
@@ -36,7 +36,14 @@ function MatchView() {
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [seekTo, setSeekTo] = useState<{ t: number; n: number } | null>(null);
-  const names = useMemo(() => match?.player_names ?? {}, [match?.player_names]);
+  const fetchedTo = useRef<number | null>(null); // how far the live results we hold reach
+  const live = match?.live ?? null;
+  const tagged = results?.tracking?.names;
+  // While analysing, tags given before it started already name players in the results so far.
+  const names = useMemo(
+    () => (live && tagged ? liveNames(match?.player_names ?? {}, tagged) : match?.player_names ?? {}),
+    [live, tagged, match?.player_names],
+  );
   const tags = useMemo(() => match?.tags ?? [], [match?.tags]);
   const known = useMemo(() => suggestions(names, people), [names, people]);
   const seek = useCallback((t: number) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 })), []);
@@ -45,7 +52,15 @@ function MatchView() {
     try {
       const m = await api.getMatch(id);
       setMatch(m);
-      if (m.status === "done") setResults(await api.results(id));
+      // Results so far are fetched again each time they reach further into the match.
+      const reach = m.live?.covered_s ?? null;
+      if (m.status === "done") {
+        fetchedTo.current = null;
+        setResults(await api.results(id));
+      } else if (reach !== null && reach !== fetchedTo.current) {
+        fetchedTo.current = reach;
+        setResults(await api.results(id));
+      }
     } catch (e) {
       setError(e instanceof ApiError && e.status === 404 ? "This match doesn't exist." : (e as Error).message);
     }
@@ -72,6 +87,7 @@ function MatchView() {
     try {
       await api.analyze(id);
       setResults(null);
+      fetchedTo.current = null;
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -121,6 +137,7 @@ function MatchView() {
   const busy = ACTIVE.has(match.status);
   const relabelling = busy && match.job?.kind === "relabel";
   const step = match.status === "done" || results ? 3 : match.calibrated || match.job ? 2 : 1;
+  const version = `${match.job?.id}:${match.job?.finished_at}:${live?.covered_s ?? ""}`;
 
   return (
     <>
@@ -207,6 +224,7 @@ function MatchView() {
               <ProgressBar value={match.job.progress} />
             </div>
           )}
+          {live && !relabelling && <LiveNote covered={live.covered_s} duration={live.duration_s} running={busy} />}
           {match.status === "failed" && <p className="error small">Analysis failed: {match.error}</p>}
         </section>
       )}
@@ -225,7 +243,8 @@ function MatchView() {
           onTag={addTag}
           onDeleteTag={deleteTag}
           updating={relabelling}
-          version={`${match.job?.id}:${match.job?.finished_at}`}
+          live={!!live}
+          version={version}
         />
       )}
       {results?.report && (
@@ -240,7 +259,16 @@ function MatchView() {
           onSeek={seek}
         />
       )}
-      {results && <Results api={api} matchId={id} data={results} names={names} onSeek={seek} />}
+      {results && (
+        <Results
+          api={api}
+          matchId={id}
+          data={results}
+          names={names}
+          onSeek={seek}
+          version={live ? version : undefined}
+        />
+      )}
 
       {error && <p className="error small">{error}</p>}
       <p>
@@ -249,5 +277,25 @@ function MatchView() {
         </button>
       </p>
     </>
+  );
+}
+
+/** What the results so far cover, and what is still to come. */
+function LiveNote({ covered, duration, running }: { covered: number; duration: number; running: boolean }) {
+  if (!running) {
+    return (
+      <p className="small muted live-note">
+        The analysis stopped {covered > 0 ? `at ${formatTime(covered)}` : "early"}. What it found up to there is
+        below; analyse again to do the whole match.
+      </p>
+    );
+  }
+  return (
+    <p className="small muted live-note">
+      {covered > 0
+        ? `Results so far: the first ${formatTime(covered)} of ${formatTime(duration)}. They update every few minutes.`
+        : "The points are in. Player stats, shots and the report appear once the first few minutes are tracked."}{" "}
+      The best points, reels and shorts come when the analysis finishes, and player numbers can still change then.
+    </p>
   );
 }

@@ -95,7 +95,7 @@ def _take_names(session: Session, match: Match, tags: list[dict], summary_path: 
     if not tags or not summary_path.exists():
         return
     session.refresh(match)  # tags and names may have changed while the job ran
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_bytes())
     named = summary.get("names", {})
     missed = set(summary.get("unmatched_tags", []))
     held = {t["id"]: k not in missed for k, t in enumerate(tags)}

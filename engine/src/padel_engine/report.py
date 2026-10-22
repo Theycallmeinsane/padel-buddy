@@ -33,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__, analytics, coach, court
+from . import __version__, analytics, coach, court, files
 from .config import EngineConfig
 from .schemas import (
     MatchReport, PlayerMoment, PlayerReport, PointInfo, Short, ShotInfo, ShotStat, ShotsSummary, TeamReport, Tip,
@@ -47,7 +47,9 @@ OVERHEAD_SCORE = {"smash": 2.0, "vibora": 1.75, "bandeja": 1.5}
 
 def build_report(shots: ShotsSummary, overlay: dict, clips: dict, cfg: EngineConfig | None = None) -> MatchReport:
     cfg = cfg or EngineConfig()
-    rallies = {r["index"]: r for r in clips.get("rallies", [])}
+    # While a match is analysed, shots cover only the points so far.
+    covered = {p.rally for p in shots.points}
+    rallies = {r["index"]: r for r in clips.get("rallies", []) if r["index"] in covered}
     spans = [(r["start_s"], r["end_s"]) for r in rallies.values()]
     points = shots.points
     teams_of = {pid: p["team"] for pid, p in overlay.get("players", {}).items()}
@@ -411,9 +413,9 @@ def run_report(
     cfg = config or EngineConfig()
     out = Path(out_dir)
     report_progress = on_progress or (lambda p: None)
-    shots = ShotsSummary.model_validate_json((out / "shots.json").read_text())
-    overlay = json.loads((out / "overlay.json").read_text())
-    clips = json.loads((out / "clips.json").read_text())
+    shots = ShotsSummary.model_validate_json((out / "shots.json").read_bytes())
+    overlay = json.loads((out / "overlay.json").read_bytes())
+    clips = json.loads((out / "clips.json").read_bytes())
     report = build_report(shots, overlay, clips, cfg)
 
     if video_path is not None:
@@ -423,8 +425,8 @@ def run_report(
         report.coach_summary = coach.summary(report, cfg.report.ai_model)
 
     report.outputs = {"report": "report.json", "markdown": "report.md"}
-    (out / "report.json").write_text(report.model_dump_json(indent=2))
-    (out / "report.md").write_text(to_markdown(report))
+    files.write_text(out / "report.json", report.model_dump_json(indent=2))
+    files.write_text(out / "report.md", to_markdown(report))
     report_progress(1.0)
     return report
 

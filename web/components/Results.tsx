@@ -11,12 +11,14 @@ export default function Results({
   data,
   names,
   onSeek,
+  version,
 }: {
   api: Api;
   matchId: string;
   data: ResultsData;
   names?: Record<string, string>;
   onSeek?: (t: number) => void;
+  version?: string; // changes when live results rewrite the heatmaps
 }) {
   const clips = data.clips;
   const tracking = data.tracking;
@@ -27,10 +29,13 @@ export default function Results({
         <section className="card">
           <h2>Highlights</h2>
           <p className="muted small" style={{ marginTop: 0 }}>
-            {clips.hits} shots heard · {clips.rallies.length} points · {plural(clips.clips.length, points ? "best point" : "intense moment")}
+            {clips.hits} shots heard · {plural(clips.rallies.length, "point")}
+            {version && !clips.clips.length ? "" : ` · ${plural(clips.clips.length, points ? "best point" : "intense moment")}`}
           </p>
           {clips.highlights ? (
             <video className="reel" controls preload="metadata" src={api.fileUrl(matchId, clips.highlights)} />
+          ) : version && clips.rallies.length ? (
+            <p className="muted">The highlight reel and the best points come when the analysis finishes.</p>
           ) : (
             <p className="muted">No rallies were found in the sound, so there is no reel.</p>
           )}
@@ -105,7 +110,7 @@ export default function Results({
               .map((p) => (
                 <figure key={p.player}>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={api.fileUrl(matchId, p.heatmap!)} alt={`${p.player} heatmap`} />
+                  <img src={api.fileUrl(matchId, p.heatmap!, version)} alt={`${p.player} heatmap`} />
                   <figcaption className="small">{p.player}</figcaption>
                 </figure>
               ))}

@@ -44,6 +44,13 @@ class TagOut(BaseModel):
     applied: bool | None  # None until the next analysis; False when no tracked player was there
 
 
+class LiveOut(BaseModel):
+    """Results published while the match is analysed (or before it failed) cover the video up to here."""
+
+    covered_s: float
+    duration_s: float
+
+
 class MatchOut(BaseModel):
     id: str
     title: str
@@ -57,6 +64,7 @@ class MatchOut(BaseModel):
     player_names: dict[str, str] = {}
     tags: list[TagOut] = []
     job: JobOut | None = None  # the latest analysis job
+    live: LiveOut | None = None  # while analysing: how far the results so far reach
 
 
 class UploadStatus(BaseModel):

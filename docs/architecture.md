@@ -39,6 +39,8 @@ them one by one.
 | `shots` | `run_shots(...)`: who hit each shot and its kind, and how each point ended |
 | `report` | `run_report(...)`: team and player numbers, success rates per shot, tips, each player's moments, reels and winners reel |
 | `shorts` | Vertical 9:16 clips of single points for phones, keeping the whole court in view |
+| `live` | Publishes results while a match is analysed: points first, then stats, ball, shots and report every few minutes |
+| `files` | Writes each output beside its name and moves it over in one step, so readers never see half a file |
 | `coach` | Optional written summary of the report's numbers from the Claude API |
 | `schemas` | Pydantic output models, the contract the API will serve |
 
@@ -61,7 +63,8 @@ Design choices:
   [engine/README.md](../engine/README.md)).
 - **Run folders.** Every run writes to one folder (`tracks.csv`,
   `summary.json`, images, preview). Locally that is a directory; in the
-  cloud the worker uploads the same folder to storage.
+  cloud the worker uploads the same folder to storage. With live results the
+  folder fills while the match is analysed, and `live.json` says how far.
 
 ## API (`api/`)
 

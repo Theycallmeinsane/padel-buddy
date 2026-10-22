@@ -25,7 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import __version__, analytics, render
+from . import __version__, analytics, files, render
 from .calibration import Calibration
 from .config import EngineConfig
 from .detection import PersonTracker, YoloPersonTracker, detect_batch
@@ -43,6 +43,7 @@ TRACK_COLUMNS = [
 ]
 
 ProgressFn = Callable[[float], None]
+ChunkFn = Callable[[float, list[dict]], None]
 
 
 def run_tracking(
@@ -53,8 +54,16 @@ def run_tracking(
     tracker: PersonTracker | None = None,
     on_progress: ProgressFn | None = None,
     tags: list[Tag] | None = None,
+    on_chunk: ChunkFn | None = None,
+    smooth_cache: analytics.SmoothCache | None = None,
 ) -> TrackingSummary:
-    """Track the four players through the video; ``tags`` name them and fix who is who where they land."""
+    """Track the four players through the video; ``tags`` name them and fix who is who where they land.
+
+    With ``on_chunk``, the stats, heatmaps and overlay so far are written
+    after every ``live.every_s`` seconds of video, with who is who as it
+    stands then, and ``on_chunk(seconds tracked, rows so far)`` is called.
+    ``smooth_cache`` keeps the smoothing of stretches that have not changed.
+    """
     cfg = config or EngineConfig()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -74,6 +83,11 @@ def run_tracking(
     rows: list[dict] = []
     others: list[list] = []  # per analysed frame, people who are not players (preview only)
     analysed = 0
+    video = VideoMeta(
+        path=str(video_path), width=info.width, height=info.height,
+        fps=info.fps, frame_count=info.frame_count, duration_s=info.duration_s,
+    )
+    due = cfg.live.every_s  # the next publish, in seconds of video
 
     # The detector sees each frame shrunk to its inference size, done ahead in
     # a background thread; shirt colours come from the full-size frame.
@@ -121,6 +135,11 @@ def run_tracking(
             analysed += 1
             if on_progress and analysed % 25 == 0:
                 on_progress(min(share * analysed / total, 0.99))
+        if on_chunk is not None and analysed and t >= due:
+            found = label_rows(rows, assigner.segments, tags or [], cfg)
+            _summarise(out, rows, analysed, fps, calib, video, cfg, dict(outputs), found, smooth_cache)
+            on_chunk(t, rows)
+            due = (math.floor(t / cfg.live.every_s) + 1) * cfg.live.every_s
 
     # Who is who is only settled once the repair has seen the whole match, so
     # every output is written from here on.
@@ -137,11 +156,7 @@ def run_tracking(
         make_browser_friendly(preview_path)
         outputs["preview"] = "preview.mp4"
 
-    video = VideoMeta(
-        path=str(video_path), width=info.width, height=info.height,
-        fps=info.fps, frame_count=info.frame_count, duration_s=info.duration_s,
-    )
-    summary = _summarise(out, rows, analysed, fps, calib, video, cfg, outputs, found)
+    summary = _summarise(out, rows, analysed, fps, calib, video, cfg, outputs, found, smooth_cache)
     if on_progress:
         on_progress(1.0)
     return summary
@@ -158,7 +173,7 @@ def relabel(
     """
     cfg = config or EngineConfig()
     out = Path(out_dir)
-    old = TrackingSummary.model_validate_json((out / "summary.json").read_text())
+    old = TrackingSummary.model_validate_json((out / "summary.json").read_bytes())
     segments = load_segments(out / "segments.json")
     rows = read_tracks(out / "tracks.csv")
     found = label_rows(rows, segments, tags, cfg)
@@ -207,10 +222,12 @@ def read_tracks(path: Path) -> list[dict]:
 
 def _summarise(
     out: Path, rows: list[dict], analysed: int, fps: float, calib: Calibration, video: VideoMeta,
-    cfg: EngineConfig, outputs: dict[str, str], found: Resolved,
+    cfg: EngineConfig, outputs: dict[str, str], found: Resolved, cache: analytics.SmoothCache | None = None,
 ) -> TrackingSummary:
     """Stats, heatmaps, the overlay and summary.json, from labelled rows."""
-    players, smoothed = _player_stats(rows, analysed, calib, cfg, out, outputs)
+    players, smoothed = _player_stats(rows, analysed, calib, cfg, out, outputs, cache)
+    if cache is not None:
+        cache.sweep()
     _write_overlay(out / "overlay.json", calib, fps, rows, smoothed)
     outputs["overlay"] = "overlay.json"
     summary = TrackingSummary(
@@ -226,7 +243,7 @@ def _summarise(
         names=found.names,
         unmatched_tags=found.unmatched,
     )
-    (out / "summary.json").write_text(summary.model_dump_json(indent=2))
+    files.write_text(out / "summary.json", summary.model_dump_json(indent=2))
     return summary
 
 
@@ -276,7 +293,8 @@ def _write_preview(
 
 
 def _player_stats(
-    rows: list[dict], analysed: int, calib: Calibration, cfg: EngineConfig, out: Path, outputs: dict[str, str]
+    rows: list[dict], analysed: int, calib: Calibration, cfg: EngineConfig, out: Path, outputs: dict[str, str],
+    cache: analytics.SmoothCache | None = None,
 ) -> tuple[list[PlayerStats], dict[str, analytics.Trajectory]]:
     topdown = render.TopDown()
     if cfg.output.heatmaps:
@@ -295,7 +313,7 @@ def _player_stats(
         feet = np.array([((r["x1"] + r["x2"]) / 2, r["y2"]) for r in mine], dtype=np.float64).reshape(-1, 2)
         J = calib.jacobian(feet)
         meas_cov = cfg.analytics.foot_pixel_noise**2 * J @ J.transpose(0, 2, 1)
-        smooth = analytics.smooth(traj, cfg.analytics, meas_cov)
+        smooth = analytics.smooth(traj, cfg.analytics, meas_cov, cache)
         smoothed[pid] = smooth
         move = analytics.movement(smooth, cfg.analytics, cfg.tracking.max_speed_mps)
         all_xy.append(smooth.xy)
@@ -304,7 +322,7 @@ def _player_stats(
         if cfg.output.heatmaps and len(mine):
             heatmap = f"heatmaps/{pid}.png"
             grid = analytics.occupancy_grid(smooth.xy, cfg.analytics.heatmap_cell_m)
-            cv2.imwrite(str(out / heatmap), topdown.heatmap(grid))
+            _write_png(out / heatmap, topdown.heatmap(grid))
 
         stats.append(
             PlayerStats(
@@ -320,9 +338,15 @@ def _player_stats(
 
     if cfg.output.heatmaps:
         xy = np.concatenate(all_xy) if all_xy else np.zeros((0, 2))
-        cv2.imwrite(str(out / "heatmaps/all.png"), topdown.heatmap(analytics.occupancy_grid(xy, cfg.analytics.heatmap_cell_m)))
+        _write_png(out / "heatmaps/all.png", topdown.heatmap(analytics.occupancy_grid(xy, cfg.analytics.heatmap_cell_m)))
         outputs["heatmap_all"] = "heatmaps/all.png"
     return stats, smoothed
+
+
+def _write_png(path: Path, image: np.ndarray) -> None:
+    ok, data = cv2.imencode(".png", image)
+    if ok:
+        files.write_bytes(path, data.tobytes())
 
 
 def _write_overlay(
@@ -355,7 +379,7 @@ def _write_overlay(
         ],
         "players": players,
     }
-    path.write_text(json.dumps(data, separators=(",", ":")))
+    files.write_text(path, json.dumps(data, separators=(",", ":")))
 
 
 def run_match(
@@ -383,6 +407,8 @@ def run_match(
 
     cfg = config or EngineConfig()
     report = on_progress or (lambda p: None)
+    if calibration is not None and cfg.live.enabled:
+        return _run_live(video_path, Path(out_dir), calibration, cfg, report, tracker, tags)
     result: dict[str, object] = {}
     tracks = None
     # Share of the progress bar: tracking, clips, the ball, then shots and the report.
@@ -409,6 +435,48 @@ def run_match(
             result["report"] = run_report(
                 out_dir, video_path, cfg, on_progress=lambda p: report(stages[2] + (1 - stages[2]) * p)
             )
+    report(1.0)
+    return result
+
+
+def _run_live(
+    video_path: str | Path,
+    out: Path,
+    calibration: Calibration,
+    cfg: EngineConfig,
+    report: ProgressFn,
+    tracker: PersonTracker | None,
+    tags: list[Tag] | None,
+) -> dict[str, object]:
+    """``run_match`` publishing results as it goes (see ``live.py``); the final outputs are the same."""
+    from .clips import listen, run_clips
+    from .live import LiveRun
+    from .report import run_report
+    from .shots import run_shots
+
+    result: dict[str, object] = {}
+    heard = listen(video_path, out, cfg)
+    report(0.03)
+    with LiveRun(video_path, out, calibration, cfg, heard) as live:
+        result["tracking"] = run_tracking(
+            video_path, calibration, out, cfg, tracker=tracker, on_progress=lambda p: report(0.03 + 0.77 * p),
+            tags=tags, on_chunk=live.chunk, smooth_cache=live.cache,
+        )
+        tracks = out / "tracks.csv"
+        ball = live.finish_ball(tracks, on_progress=lambda p: report(0.8 + 0.06 * p))
+        made = live.finish_points()
+        clips = run_clips(
+            video_path, out, cfg, tracks_csv=tracks, on_progress=lambda p: report(0.86 + 0.06 * p), heard=heard,
+            made=made,
+        )
+        result["clips"] = clips
+        if ball is not None:
+            result["ball"] = ball
+        if cfg.shots.enabled and clips.rallies:
+            result["shots"] = run_shots(out, cfg)
+            if cfg.report.enabled:
+                result["report"] = run_report(out, video_path, cfg, on_progress=lambda p: report(0.92 + 0.08 * p))
+        live.done()
     report(1.0)
     return result
 

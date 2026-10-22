@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,10 +27,35 @@ def segments(t: np.ndarray, max_gap_s: float) -> list[slice]:
     return [slice(a, b) for a, b in zip(bounds[:-1], bounds[1:])]
 
 
+class SmoothCache:
+    """Smoothed stretches kept between calls, so smoothing a growing track again only redoes what changed.
+
+    Results published while a match is analysed are rebuilt every few
+    minutes from the whole track so far; a stretch that ended before the
+    last publish, and whose samples are unchanged, comes from here.
+    """
+
+    def __init__(self) -> None:
+        self._kept: dict[bytes, np.ndarray] = {}
+        self._used: set[bytes] = set()
+
+    def get(self, key: bytes, make: Callable[[], np.ndarray]) -> np.ndarray:
+        if key not in self._kept:
+            self._kept[key] = make()
+        self._used.add(key)
+        return self._kept[key]
+
+    def sweep(self) -> None:
+        """Forget stretches not asked for since the last sweep."""
+        self._kept = {k: v for k, v in self._kept.items() if k in self._used}
+        self._used = set()
+
+
 def smooth(
     traj: Trajectory,
     cfg: AnalyticsConfig,
     meas_cov: np.ndarray | None = None,
+    cache: SmoothCache | None = None,
 ) -> Trajectory:
     """Kalman (constant-velocity) filter plus RTS smoother, per continuous segment.
 
@@ -42,8 +69,19 @@ def smooth(
         meas_cov = np.broadcast_to(np.eye(2) * cfg.default_position_std_m**2, (n, 2, 2))
     out = traj.xy.astype(np.float64).copy()
     for seg in segments(traj.t, cfg.max_gap_s):
-        if seg.stop - seg.start > 1:
-            out[seg] = _rts_smooth(traj.t[seg], traj.xy[seg], meas_cov[seg], cfg.accel_std_mps2)
+        if seg.stop - seg.start <= 1:
+            continue
+        t, z, r = traj.t[seg], traj.xy[seg], meas_cov[seg]
+        make = lambda: _rts_smooth(t, z, r, cfg.accel_std_mps2)  # noqa: E731
+        if cache is None:
+            out[seg] = make()
+        else:
+            key = hashlib.blake2b(
+                b"".join(np.ascontiguousarray(a, np.float64).tobytes() for a in (t, z, r))
+                + repr(cfg.accel_std_mps2).encode(),
+                digest_size=16,
+            ).digest()
+            out[seg] = cache.get(key, make)
     return Trajectory(traj.t, out)
 
 
