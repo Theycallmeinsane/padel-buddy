@@ -10,7 +10,8 @@ are grouped into people:
   alike first, until no two left are alike enough;
 - a piece that starts a moment after another ended, a few steps away, leans
   to being the same person, and so does a piece cut only because two
-  players passed close;
+  players passed close, and most of all one cut because its person walked
+  round the net (colours seen from the two sides differ too much to go on);
 - tags name people: pieces with one name are one person, pieces with
   different names are two.
 
@@ -260,7 +261,8 @@ def _links(segments: list[Segment], cfg: TrackingConfig) -> list[dict[int, float
     """How much each pair of segments leans to being one person, before colours.
 
     A segment cut only because two players parted continues the one before
-    (``contact_link_bonus``). A segment starting soon after another ended,
+    (``contact_link_bonus``), as does one cut because its person crossed the
+    net (``crossing_link_bonus``). A segment starting soon after another ended,
     within walking distance, may be that person found again
     (``continuity_bonus``, less the longer the gap and the further the step).
     """
@@ -272,7 +274,7 @@ def _links(segments: list[Segment], cfg: TrackingConfig) -> list[dict[int, float
 
     for j, s in enumerate(segments):
         if s.after is not None:
-            lean(s.after, j, cfg.contact_link_bonus)
+            lean(s.after, j, cfg.crossing_link_bonus if s.crossed else cfg.contact_link_bonus)
     starts = sorted(range(len(segments)), key=lambda i: segments[i].start_t)
     start_t = np.array([segments[i].start_t for i in starts])
     for i, s in enumerate(segments):

@@ -109,6 +109,15 @@ def zone_of(y: float) -> str:
     return "back"
 
 
+def by_net_post(x: float, y: float, across: float, along: float) -> bool:
+    """True when (x, y) is in a doorway by a net post: within ``across`` of a side line, ``along`` of the net.
+
+    The doors are there, so people waiting to play, fetching balls or
+    watching stand in them, often just inside the lines.
+    """
+    return abs(y - NET_Y) < along and min(x, WIDTH - x) < across
+
+
 def inside(x: float, y: float, margin: float = 0.0) -> bool:
     """True when (x, y) lies within the court, expanded by ``margin`` metres."""
     return -margin <= x <= WIDTH + margin and -margin <= y <= LENGTH + margin

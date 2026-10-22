@@ -180,6 +180,25 @@ def test_pieces_found_again_a_step_away_lean_to_the_same_person():
     assert labels == ["P1", "P2", "P3", "P4", "P2", "P1"]
 
 
+def test_one_person_s_pieces_from_both_sides_of_the_net_come_together_where_they_crossed():
+    """At a changeover the tracker follows each player round the net. From the far side every kit looks
+    darker and duller, too different to match by colour; the crossing says who they are."""
+    near = [colour(0), colour(4), colour(8), colour(12)]
+    dull = colour(17)  # the far side: dim light, the net in front
+    far = [(0.45 * look + 0.55 * dull).astype(np.float32) for look in near]
+    segments = []
+    # 0-60 s: players 0 and 1 near, 2 and 3 far. Then each walks round the net and plays 60 s on the other side.
+    for k, (slot, y0) in enumerate((("P1", 4.0), ("P2", 4.0), ("P3", 16.0), ("P4", 16.0))):
+        before = near[k] if y0 < 10 else far[k]
+        after = far[k] if y0 < 10 else near[k]
+        segments.append(piece(slot, 0, 60, before, (2.0 + 4 * (k % 2), y0)))
+        crossed = piece(slot, 60.1, 120, after, (2.0 + 4 * (k % 2), 20.0 - y0), after=len(segments) - 1)
+        crossed.crossed = True
+        segments.append(crossed)
+    assert len(set(group_people(segments, CFG.model_copy(update={"crossing_link_bonus": 0.0})).labels)) == 8
+    assert group_people(segments, CFG).labels == ["P1", "P1", "P2", "P2", "P3", "P3", "P4", "P4"]
+
+
 def test_grouping_a_long_match_is_quick():
     import time
 

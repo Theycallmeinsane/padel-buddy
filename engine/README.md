@@ -120,7 +120,10 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    tracker's id. People watching stand just outside the glass, by the net
    posts and the side fences, so only someone inside the lines can become a
    player, a player is followed off court only while the tracker keeps the
-   same id, and one followed outside the lines for 4 s is let go.
+   same id, and one followed outside the lines for 4 s is let go. The
+   doorways by the net posts count as off court (0.6 m in from the side
+   lines, 1.5 m either side of the net): people waiting to play, fetching
+   balls or watching stand in them, often just inside the lines.
    When a player disappears (out of frame, behind another player, or just
    missed by the detector), nobody else's number changes and their own
    number waits for them; they simply have no box while they are gone. A
@@ -132,8 +135,9 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    shirt colour, and only by someone whose colours are close; that limit
    relaxes over 30 s in case their look changed. Each slot's track is cut
    into pieces wherever its person vanished for more than half a second or
-   jumped, and where two people part after passing within a metre of each
-   other, since that is where a swap would happen.
+   jumped, where two people part after passing within a metre of each
+   other, since that is where a swap would happen, and where someone walks
+   round the net to the other side, so each piece is seen from one side.
 
    **Who is who** is decided once the whole match is tracked
    (`identity.py`), for any number of people. Pieces seen at the same moment
@@ -141,7 +145,10 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    alike are the same person, the most alike first, until nobody left is
    alike enough (`tracking.same_person_max_distance`); a piece that starts a
    moment after another ended, a step away, or that continues a track cut
-   at a close pass, leans to being the same person. Short pieces that match
+   at a close pass, leans to being the same person, and a piece that
+   continues a track across the net leans to it strongly: from the far side
+   colours look too different (smaller, dimmer, behind the net) to match on
+   their own. Short pieces that match
    nobody well enough join the player they look most like. So a mix-up the
    live pass made is put right by colour, someone who rotates in becomes a
    new player, and someone who sat out gets their number back.

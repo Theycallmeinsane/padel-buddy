@@ -50,6 +50,20 @@ class TrackingConfig(BaseModel):
     end_tolerance_m: float = Field(
         0.5, ge=0, description="The same past the back walls, where foot positions are less precise."
     )
+    net_post_across_m: float = Field(
+        0.6,
+        ge=0,
+        description="The doorways by the net posts count as off court: this far in from the side lines, "
+        "and net_post_along_m either side of the net. People waiting to play, fetching balls or watching "
+        "stand there, often just inside the lines. 0 counts them as on court.",
+    )
+    net_post_along_m: float = Field(1.5, ge=0, description="See net_post_across_m.")
+    net_cross_m: float = Field(
+        0.5,
+        gt=0,
+        description="A track is cut where its person is this far past the net on the other side (they walked "
+        "round it, at a changeover), so each piece of track stays on one side, where colours compare.",
+    )
     outside_release_s: float = Field(
         4.0, gt=0, description="A player followed outside the lines this long is let go and found again by appearance."
     )
@@ -131,6 +145,13 @@ class TrackingConfig(BaseModel):
         ge=0,
         description="How much more alike two pieces count when one continues the other after two people "
         "passed close (the tracker usually keeps them right).",
+    )
+    crossing_link_bonus: float = Field(
+        0.3,
+        ge=0,
+        description="How much more alike two pieces count when one continues the other across the net: the "
+        "tracker followed someone round it. Colours seen from either side of the net differ a lot (size, "
+        "light, the net in front), so this is how one person's near and far pieces come together.",
     )
     continuity_bonus: float = Field(
         0.15,

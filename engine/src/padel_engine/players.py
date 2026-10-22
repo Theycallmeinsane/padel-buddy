@@ -12,7 +12,9 @@ who is decided after the match (identity.py).
 
 People watching stand just outside the glass, by the net posts and the side
 fences, so only someone inside the lines can be picked up by a free slot,
-and someone followed outside the lines for long is let go.
+and someone followed outside the lines for long is let go. The doorways by
+the net posts count as outside: people waiting to play, fetching balls or
+watching stand in them, often just inside the lines.
 
 A person who vanishes (off frame, hidden behind someone, missed by the
 detector) keeps their slot and nobody else takes it: whoever was seen a
@@ -20,9 +22,11 @@ moment ago wins over them, and nobody is moved onto someone who clearly looks
 different unless the tracker says it is still the same person.
 
 Each slot's track is cut into pieces (``Segment``) wherever it broke (a gap,
-an impossible jump, a release) and where two people part after passing
-close, the moment the tracker may have swapped them. Each piece keeps its
-colours, times and places, for identity.py to group into people.
+an impossible jump, a release), where two people part after passing close
+(the moment the tracker may have swapped them) and where someone walks round
+the net to the other side, so each piece is seen from one side only. Each
+piece keeps its colours, times and places, for identity.py to group into
+people.
 """
 
 from __future__ import annotations
@@ -98,7 +102,9 @@ class Segment:
     frames: int = 0
     clear: int = 0  # frames whose colours were seen clearly
     colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(APPEARANCE_SHAPE))
-    after: int | None = None  # the segment it continues, when cut only because two players parted
+    after: int | None = None  # the segment it continues, when cut only because two players parted or one crossed
+    crossed: bool = False  # cut because its person walked round the net: ``after`` was on the other side
+    side: str = ""  # "near" or "far", where it starts; a piece that crosses the net is cut there
     inside: int = 0  # frames inside the lines
     start_t: float = 0.0  # seconds, and court metres, where it starts and ends
     end_t: float = 0.0
@@ -110,7 +116,7 @@ class Segment:
     ) -> None:
         xy = (round(float(xy[0]), 3), round(float(xy[1]), 3))
         if not self.frames:
-            self.start_t, self.start_xy = t, xy
+            self.start_t, self.start_xy, self.side = t, xy, court.side_of(xy[1])
         self.last, self.end_t, self.end_xy = frame, t, xy
         self.frames += 1
         self.inside += inside
@@ -188,8 +194,16 @@ class PlayerAssigner:
         return any(float(np.linalg.norm(xy - where[pid])) < limit for o, xy in where.items() if o != pid)
 
     def _in_lines(self, xy: np.ndarray) -> bool:
-        side, end = self.cfg.side_tolerance_m, self.cfg.end_tolerance_m
-        return -side <= xy[0] <= court.WIDTH + side and -end <= xy[1] <= court.LENGTH + end
+        cfg = self.cfg
+        side, end = cfg.side_tolerance_m, cfg.end_tolerance_m
+        if not (-side <= xy[0] <= court.WIDTH + side and -end <= xy[1] <= court.LENGTH + end):
+            return False
+        return not court.by_net_post(float(xy[0]), float(xy[1]), cfg.net_post_across_m, cfg.net_post_along_m)
+
+    def _crossed(self, segment: Segment, xy: np.ndarray) -> bool:
+        """Whether someone whose piece started on one side is now well past the net on the other."""
+        past = (xy[1] - court.NET_Y) * (1 if segment.side == "near" else -1)
+        return bool(segment.side) and past > self.cfg.net_cross_m
 
     def _appearance_limit(self, slot: _Slot, time_s: float, same_track: bool) -> float:
         """Largest colour distance a player accepts.
@@ -277,6 +291,11 @@ class PlayerAssigner:
             # After a gap or a jump this may be someone else; identity.py decides.
             slot.segment = len(self.segments)
             self.segments.append(Segment(slot.player_id, self.frames))
+        elif self._crossed(self.segments[slot.segment], cand.court_xy):
+            # Round the net to the other side (a changeover). Still them, but
+            # their colours look different from there, so a new piece, linked.
+            self.segments.append(Segment(slot.player_id, self.frames, after=slot.segment, crossed=True))
+            slot.segment = len(self.segments) - 1
         elif slot.contact and not near:
             # Two players just parted and may have been swapped. The piece
             # stays linked to the one before, so only a tag pulls them apart.
@@ -387,7 +406,7 @@ def appearance_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
     return float(total / weight) if weight else 0.5
 
 
-SEGMENTS_VERSION = 3  # 2: colours of three body parts; 3: times, places and time inside the lines
+SEGMENTS_VERSION = 4  # 2: colours of three body parts; 3: times, places and time inside the lines; 4: sides
 
 
 def save_segments(path: str | Path, segments: list[Segment]) -> None:
@@ -397,7 +416,8 @@ def save_segments(path: str | Path, segments: list[Segment]) -> None:
         colour = s.colour if s.clear else np.zeros(APPEARANCE_SHAPE)
         rows.append({
             "player": s.player_id, "first": s.first, "last": s.last, "frames": s.frames, "clear": s.clear,
-            "after": s.after, "inside": s.inside, "t": [round(s.start_t, 3), round(s.end_t, 3)],
+            "after": s.after, "crossed": s.crossed, "side": s.side, "inside": s.inside,
+            "t": [round(s.start_t, 3), round(s.end_t, 3)],
             "xy": [*s.start_xy, *s.end_xy], "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
         })
     Path(path).write_text(json.dumps({"version": SEGMENTS_VERSION, "segments": rows}, separators=(",", ":")))
@@ -410,7 +430,8 @@ def load_segments(path: str | Path) -> list[Segment]:
     segments = []
     for r in data["segments"]:
         s = Segment(
-            r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"], inside=r["inside"],
+            r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"], crossed=r["crossed"],
+            side=r["side"], inside=r["inside"],
             start_t=r["t"][0], end_t=r["t"][1], start_xy=tuple(r["xy"][:2]), end_xy=tuple(r["xy"][2:]),
         )
         s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(APPEARANCE_SHAPE) * s.clear
