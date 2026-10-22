@@ -145,10 +145,14 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    alike are the same person, the most alike first, until nobody left is
    alike enough (`tracking.same_person_max_distance`); a piece that starts a
    moment after another ended, a step away, or that continues a track cut
-   at a close pass, leans to being the same person, and a piece that
-   continues a track across the net leans to it strongly: from the far side
-   colours look too different (smaller, dimmer, behind the net) to match on
-   their own. Short pieces that match
+   at a close pass, leans to being the same person. Colours are compared
+   side by side of the net: from the far side everyone looks smaller,
+   dimmer and is behind the net, so one person's near and far colours
+   differ more than two people's on one side, and pieces only ever seen
+   from opposite sides must look more alike (`tracking.cross_side_penalty`).
+   One person's near and far pieces come together where the tracker
+   followed them round the net with nobody close by: those pieces are the
+   same person. Short pieces that match
    nobody well enough join the player they look most like. So a mix-up the
    live pass made is put right by colour, someone who rotates in becomes a
    new player, and someone who sat out gets their number back.

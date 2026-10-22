@@ -103,7 +103,7 @@ class Segment:
     clear: int = 0  # frames whose colours were seen clearly
     colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(APPEARANCE_SHAPE))
     after: int | None = None  # the segment it continues, when cut only because two players parted or one crossed
-    crossed: bool = False  # cut because its person walked round the net: ``after`` was on the other side
+    crossed: bool = False  # cut because its person walked round the net alone: ``after`` is them, on the other side
     side: str = ""  # "near" or "far", where it starts; a piece that crosses the net is cut there
     inside: int = 0  # frames inside the lines
     start_t: float = 0.0  # seconds, and court metres, where it starts and ends
@@ -293,8 +293,10 @@ class PlayerAssigner:
             self.segments.append(Segment(slot.player_id, self.frames))
         elif self._crossed(self.segments[slot.segment], cand.court_xy):
             # Round the net to the other side (a changeover). Still them, but
-            # their colours look different from there, so a new piece, linked.
-            self.segments.append(Segment(slot.player_id, self.frames, after=slot.segment, crossed=True))
+            # their colours look different from there, so a new piece, linked:
+            # sure to be them, unless someone was close enough to be swapped in.
+            sure = not (slot.contact or near)
+            self.segments.append(Segment(slot.player_id, self.frames, after=slot.segment, crossed=sure))
             slot.segment = len(self.segments) - 1
         elif slot.contact and not near:
             # Two players just parted and may have been swapped. The piece

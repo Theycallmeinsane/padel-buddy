@@ -6,12 +6,17 @@ someone. People rotate in and out of a game, so after the match the pieces
 are grouped into people:
 
 - two pieces seen at the same moment are two people;
+- a piece that continues a track across the net, with nobody close by, is
+  the same person: the tracker followed them round it at a changeover;
 - pieces that look alike (shirt, shorts, legs) are one person, the most
-  alike first, until no two left are alike enough;
+  alike first, until no two left are alike enough. Looks are compared side
+  by side of the net: from the far side everyone is smaller, dimmer and
+  behind the net, so one person's near and far colours differ more than two
+  people's on the same side. Pieces only ever seen on opposite sides count
+  as less alike (``cross_side_penalty``);
 - a piece that starts a moment after another ended, a few steps away, leans
   to being the same person, and so does a piece cut only because two
-  players passed close, and most of all one cut because its person walked
-  round the net (colours seen from the two sides differ too much to go on);
+  players passed close;
 - tags name people: pieces with one name are one person, pieces with
   different names are two.
 
@@ -50,6 +55,7 @@ def group_people(segments: list[Segment], cfg: TrackingConfig, pins: dict[int, s
         return People([], {}, [])
     g = _Grouping(segments, cfg)
     dropped = g.pin(pins or {})
+    g.join_crossings()
     g.merge_alike(cfg.same_person_max_distance)
     big = g.players(cfg.min_player_s)
     g.attach(big, cfg.attach_max_distance)
@@ -64,6 +70,7 @@ class _Grouping:
     merge only recomputes the merged cluster and the clusters whose best
     partner it was: about N vector operations per merge, N clusters long.
     Cluster ids are segment indices; a merged cluster keeps one of the two.
+    Colours are kept per side of the net (index 0 near, 1 far).
     """
 
     def __init__(self, segments: list[Segment], cfg: TrackingConfig):
@@ -73,15 +80,21 @@ class _Grouping:
         self.active = np.ones(n, bool)
         self.members = [[i] for i in range(n)]
         self.owner = np.arange(n)
-        self.colour_sum = np.stack([s.colour_sum for s in segments]).astype(np.float64)
-        self.clear = np.array([s.clear for s in segments], np.float64)
+        far = np.array([s.side == "far" for s in segments], int)
+        self.colour_sum = np.zeros((n, 2, *segments[0].colour_sum.shape))
+        self.colour_sum[np.arange(n), far] = np.stack([s.colour_sum for s in segments])
+        self.clear = np.zeros((n, 2))
+        self.clear[np.arange(n), far] = [s.clear for s in segments]
         self.inside = np.array([s.inside for s in segments], np.float64)
         self.first = np.array([s.start_t for s in segments], np.float64)
         self.slot = [s.player_id for s in segments]
         self.name = np.full(n, -1)
         self.name_of: list[str] = []
-        self.root = np.zeros((n, *self.colour_sum.shape[1:]), np.float64)  # sqrt of each part's share
-        self.present = np.zeros((n, self.colour_sum.shape[1]), bool)
+        # sqrt of each body part's colour shares, per side and part: [near, far, both], part, cluster, bin
+        # (both sides together is for comparing clusters seen on one side each)
+        parts, bins = self.colour_sum.shape[2:]
+        self.root = np.zeros((3, parts, n, bins))
+        self.present = np.zeros((3, n, parts), bool)
         for k in range(n):
             self._shape(k)
         self.cannot = _overlaps(segments)
@@ -92,9 +105,13 @@ class _Grouping:
     # -- building blocks ------------------------------------------------------
 
     def _shape(self, k: int) -> None:
-        sums = self.colour_sum[k].sum(axis=1, keepdims=True)
-        self.present[k] = sums[:, 0] > 0
-        self.root[k] = np.sqrt(np.divide(self.colour_sum[k], sums, out=np.zeros_like(self.colour_sum[k]), where=sums > 0))
+        for side in (0, 1):
+            colour = self.colour_sum[k, side]
+            sums = colour.sum(axis=1, keepdims=True)
+            self.present[side, k] = sums[:, 0] > 0
+            self.root[side, :, k] = np.sqrt(np.divide(colour, sums, out=np.zeros_like(colour), where=sums > 0))
+        self.root[2, :, k] = self.root[0, :, k] + self.root[1, :, k]
+        self.present[2, k] = self.present[0, k] | self.present[1, k]
 
     def scores(self, k: int) -> np.ndarray:
         """Score of merging cluster ``k`` with every cluster: colour distance, plus doubt, minus links.
@@ -102,17 +119,41 @@ class _Grouping:
         Inactive clusters, ``k`` itself and clusters it cannot be score inf.
         """
         cfg = self.cfg
-        # Bhattacharyya distance per body part, as OpenCV computes it on histograms that sum to 1.
-        bc = np.stack([self.root[:, p] @ self.root[k, p] for p in range(self.root.shape[1])], axis=1)
-        part = np.sqrt(np.clip(1.0 - bc, 0.0, 1.0))
-        w = (self.present[k] & self.present) * _WEIGHTS
-        total = w.sum(axis=1)
-        dist = np.where(total > 0, (part * w).sum(axis=1) / np.maximum(total, 1e-12), 0.5)
+        # Per side of the net: the Bhattacharyya distance of each body part, as OpenCV computes it on
+        # histograms that sum to 1, weighted over the parts both show.
+        n = len(self.active)
+        side_dist, shown = np.zeros((n, 2)), np.zeros((n, 2), bool)
+        for side in np.flatnonzero(self.clear[k] > 0):
+            d, total = self._distance(side, k)
+            side_dist[:, side], shown[:, side] = d, total > 0
+        # Frames seen clearly by both, per side; the sides are weighted by them.
+        seen = np.minimum(self.clear[k], self.clear) * shown
+        common = seen.sum(axis=1)
+        dist = np.divide((side_dist * seen).sum(axis=1), common, out=np.zeros(n), where=common > 0)
+        # Never seen on the same side: compare across the net (each is seen on one side only, so the
+        # sum of the two sides is that side), and count it as less alike.
+        lone = common == 0
+        if lone.any():
+            across, shared = self._distance(2, k)
+            dist[lone] = across[lone] + np.where(shared[lone] > 0, cfg.cross_side_penalty, 0.0)
+            common[lone] = np.minimum(self.clear[k].sum(), self.clear.sum(axis=1))[lone]
         # Colours seen for a moment are a poor guide: short pieces must look more alike.
-        seen_s = np.minimum(self.clear[k], self.clear) / cfg.process_fps
-        score = dist + cfg.colour_noise / np.sqrt(1.0 + seen_s)
+        score = dist + cfg.colour_noise / np.sqrt(1.0 + common / cfg.process_fps)
         for m, bonus in self.links[k].items():
             score[m] -= bonus
+        return self._allowed(k, score)
+
+    def _distance(self, side: int, k: int):
+        """Weighted mean over body parts of the Bhattacharyya distance of cluster ``k`` to every cluster, on
+        one side (2: both), 0.5 where they show no part in common; and the weight of the parts they do."""
+        root = self.root[side]
+        bc = np.stack([root[p] @ root[p, k] for p in range(root.shape[0])], axis=1)
+        part = np.sqrt(np.clip(1.0 - bc, 0.0, 1.0))
+        w = (self.present[side, k] & self.present[side]) * _WEIGHTS
+        total = w.sum(axis=1)
+        return np.where(total > 0, (part * w).sum(axis=1) / np.maximum(total, 1e-12), 0.5), total
+
+    def _allowed(self, k: int, score: np.ndarray) -> np.ndarray:
         score[~self.active] = _NO
         score[k] = _NO
         if self.cannot[k]:
@@ -177,6 +218,16 @@ class _Grouping:
                 continue
             self.merge(c, k)
         return dropped
+
+    def join_crossings(self) -> None:
+        """Pieces that continue a track across the net, with nobody close by, are one person."""
+        for j, s in enumerate(self.segments):
+            if not s.crossed or s.after is None:
+                continue
+            k, m = int(self.owner[s.after]), int(self.owner[j])
+            named_apart = self.name[k] >= 0 and self.name[m] >= 0 and self.name[k] != self.name[m]
+            if k != m and m not in self.cannot[k] and not named_apart:
+                self.merge(k, m)
 
     def merge_alike(self, limit: float) -> None:
         """Merge the most alike pair of clusters, again and again, while their score is under ``limit``.
@@ -261,8 +312,9 @@ def _links(segments: list[Segment], cfg: TrackingConfig) -> list[dict[int, float
     """How much each pair of segments leans to being one person, before colours.
 
     A segment cut only because two players parted continues the one before
-    (``contact_link_bonus``), as does one cut because its person crossed the
-    net (``crossing_link_bonus``). A segment starting soon after another ended,
+    (``contact_link_bonus``), as does one cut where its person crossed the
+    net close to someone. (A crossing with nobody close is the same person:
+    ``join_crossings``.) A segment starting soon after another ended,
     within walking distance, may be that person found again
     (``continuity_bonus``, less the longer the gap and the further the step).
     """
@@ -273,8 +325,8 @@ def _links(segments: list[Segment], cfg: TrackingConfig) -> list[dict[int, float
             out[i][j] = out[j][i] = bonus
 
     for j, s in enumerate(segments):
-        if s.after is not None:
-            lean(s.after, j, cfg.crossing_link_bonus if s.crossed else cfg.contact_link_bonus)
+        if s.after is not None and not s.crossed:
+            lean(s.after, j, cfg.contact_link_bonus)
     starts = sorted(range(len(segments)), key=lambda i: segments[i].start_t)
     start_t = np.array([segments[i].start_t for i in starts])
     for i, s in enumerate(segments):

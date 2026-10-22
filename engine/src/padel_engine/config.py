@@ -146,12 +146,13 @@ class TrackingConfig(BaseModel):
         description="How much more alike two pieces count when one continues the other after two people "
         "passed close (the tracker usually keeps them right).",
     )
-    crossing_link_bonus: float = Field(
-        0.3,
+    cross_side_penalty: float = Field(
+        0.2,
         ge=0,
-        description="How much more alike two pieces count when one continues the other across the net: the "
-        "tracker followed someone round it. Colours seen from either side of the net differ a lot (size, "
-        "light, the net in front), so this is how one person's near and far pieces come together.",
+        description="Added to the colour difference of pieces only ever seen on opposite sides of the net: "
+        "from the far side everyone looks smaller, dimmer and is behind the net, so one person's near and "
+        "far colours differ more than two people's on one side. One person's near and far pieces come "
+        "together where the tracker followed them round the net.",
     )
     continuity_bonus: float = Field(
         0.15,
