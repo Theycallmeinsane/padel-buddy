@@ -41,6 +41,7 @@ them one by one.
 | `shorts` | Vertical 9:16 clips of single points for phones, keeping the whole court in view |
 | `live` | Publishes results while a match is analysed: points first, then stats, ball, shots and report every few minutes |
 | `files` | Writes each output beside its name and moves it over in one step, so readers never see half a file |
+| `seen` | Saves everyone the detector saw (`detections.npz`) and replays it, to track a match again without the GPU |
 | `coach` | Optional written summary of the report's numbers from the Claude API |
 | `schemas` | Pydantic output models, the contract the API will serve |
 
@@ -65,6 +66,10 @@ Design choices:
   `summary.json`, images, preview). Locally that is a directory; in the
   cloud the worker uploads the same folder to storage. With live results the
   folder fills while the match is analysed, and `live.json` says how far.
+- **Detect once.** Finding people is most of tracking's time. The run
+  keeps what the detector saw (`detections.npz`), so a change to who-is-who
+  logic, settings or the calibration tracks the match again in minutes,
+  with exactly the same people as input.
 
 ## API (`api/`)
 

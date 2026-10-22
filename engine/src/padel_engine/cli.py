@@ -66,6 +66,10 @@ def track(
     device: Optional[str] = typer.Option(None, help="cpu, cuda:0, mps"),
     preview: bool = typer.Option(False, help="Also write a video with boxes and a minimap burnt in."),
     config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+    detections: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False,
+        help="detections.npz from an earlier run of this video: track again from it, without the detector.",
+    ),
 ) -> None:
     """Find and follow the four players; write tracks, stats, heatmaps and the viewer overlay."""
     from .pipeline import run_tracking
@@ -80,7 +84,9 @@ def track(
     cfg.output.preview_video = preview
 
     calib = Calibration.load(calibration)
-    summary = _with_progress("Tracking", lambda cb: run_tracking(video, calib, out, cfg, on_progress=cb))
+    summary = _with_progress(
+        "Tracking", lambda cb: run_tracking(video, calib, out, cfg, on_progress=cb, detections=detections)
+    )
     _print_tracking(summary, out)
 
 

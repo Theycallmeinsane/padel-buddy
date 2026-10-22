@@ -301,6 +301,11 @@ class ReportConfig(BaseModel):
 class OutputConfig(BaseModel):
     preview_video: bool = False  # the web viewer draws the same overlay live
     heatmaps: bool = True
+    detections: bool = Field(
+        True,
+        description="Save everyone the detector saw to detections.npz (tens of MB for a long match), so the "
+        "match can be tracked again in minutes, without the GPU (padel-engine track --detections).",
+    )
 
 
 class LiveConfig(BaseModel):

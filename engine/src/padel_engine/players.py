@@ -50,7 +50,7 @@ TEAM_OF = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
 _START_SIDE = {"P1": "near", "P2": "near", "P3": "far", "P4": "far"}
 
 _INFEASIBLE = 1e6
-_HIST_BINS = (18, 4)  # hue, saturation
+HIST_BINS = (18, 4)  # hue, saturation
 
 
 @dataclass
@@ -90,7 +90,7 @@ class Segment:
     last: int = -1
     frames: int = 0
     clear: int = 0  # frames whose colours were seen clearly
-    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(_HIST_BINS))
+    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(HIST_BINS))
     after: int | None = None  # the segment it continues, when cut only because two players parted
 
     def add(self, frame: int, appearance: np.ndarray | None) -> None:
@@ -567,7 +567,7 @@ def appearance_of(frame: np.ndarray, bbox: tuple[float, float, float, float]) ->
     if tx2 - tx1 < 3 or ty2 - ty1 < 3:
         return None
     hsv = cv2.cvtColor(frame[ty1:ty2, tx1:tx2], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, list(_HIST_BINS), [0, 180, 0, 256])
+    hist = cv2.calcHist([hsv], [0, 1], None, list(HIST_BINS), [0, 180, 0, 256])
     total = hist.sum()
     return (hist / total).astype(np.float32) if total > 0 else None
 
@@ -583,7 +583,7 @@ def save_segments(path: str | Path, segments: list[Segment]) -> None:
     """Every segment with its colours, so who is who can be decided again (after a tag) without re-tracking."""
     rows = []
     for s in segments:
-        colour = s.colour if s.clear else np.zeros(_HIST_BINS)
+        colour = s.colour if s.clear else np.zeros(HIST_BINS)
         rows.append({
             "player": s.player_id, "first": s.first, "last": s.last, "frames": s.frames, "clear": s.clear,
             "after": s.after, "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
@@ -596,6 +596,6 @@ def load_segments(path: str | Path) -> list[Segment]:
     segments = []
     for r in data["segments"]:
         s = Segment(r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"])
-        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(_HIST_BINS) * s.clear
+        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(HIST_BINS) * s.clear
         segments.append(s)
     return segments

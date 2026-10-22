@@ -33,6 +33,9 @@ padel-engine calibrate match.mp4 --out calibration.json
 # Track the four players.
 padel-engine track match.mp4 -c calibration.json --out runs/match1 --device cuda:0
 
+# Track again without the detector (new settings, code or calibration), from what it saw last time.
+padel-engine track match.mp4 -c calibration.json --out runs/again --detections runs/match1/detections.npz
+
 # Clips and highlights from the sound (add --tracks runs/match1/tracks.csv to use movement too).
 padel-engine clips match.mp4 --out runs/match1
 
@@ -68,6 +71,7 @@ Each run folder contains:
 | `calibration_check.jpg` | The court model drawn over the first frame |
 | `tracks.csv` | One row per player per analysed frame: box, track id, track piece, court x/y in metres |
 | `segments.json` | Every piece of a player's track with its shirt colours, so names can be applied later without tracking again |
+| `detections.npz` | Everyone the detector saw in each analysed frame, with shirt colours (`output.detections`, tens of MB for a long match), so the match can be tracked again in minutes without the GPU |
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | With `track --preview` only: the video with player boxes and a minimap burnt in. The app's viewer draws the same live, so it is off by default |

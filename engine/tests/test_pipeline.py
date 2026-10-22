@@ -160,6 +160,39 @@ def test_shrunk_batched_frames_give_the_same_tracks(tmp_path):
             assert float(a[k]) == pytest.approx(float(b[k]), abs=0.11), k
 
 
+def test_tracking_again_from_saved_detections_writes_the_same_tracks(tmp_path):
+    """detections.npz holds what the detector saw, so the match can be tracked again without it."""
+    cam = Camera()
+    gt = paths(8.0, SRC_FPS)
+    video = tmp_path / "match.mp4"
+    make_video(video, cam, gt)
+    calib = Calibration.from_points(
+        {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
+         ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
+        (W, H),
+    )
+    cfg = EngineConfig()
+    stride = round(SRC_FPS / cfg.tracking.process_fps)
+    first = run_tracking(video, calib, tmp_path / "first", cfg, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    saved = tmp_path / "first" / "detections.npz"
+    assert first.outputs["detections"] == "detections.npz" and saved.exists()
+
+    again = run_tracking(video, calib, tmp_path / "again", cfg, detections=saved)
+
+    for name in ["tracks.csv", "segments.json", "overlay.json"]:
+        assert (tmp_path / "again" / name).read_bytes() == (tmp_path / "first" / name).read_bytes(), name
+    assert again.players == first.players and again.analysed_frames == first.analysed_frames
+    assert not (tmp_path / "again" / "detections.npz").exists()
+
+    # Made at another frame rate, the frames would not line up.
+    with pytest.raises(ValueError, match="frames per second"):
+        run_tracking(video, calib, tmp_path / "other", EngineConfig.model_validate({"tracking": {"process_fps": 5}}),
+                     detections=saved)
+    off = EngineConfig.model_validate({"output": {"detections": False}})
+    run_tracking(video, calib, tmp_path / "none", off, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    assert not (tmp_path / "none" / "detections.npz").exists()
+
+
 def test_tags_name_players_and_fix_who_is_who_without_tracking_again(tmp_path):
     cam = Camera()
     gt = paths(12.0, SRC_FPS)
