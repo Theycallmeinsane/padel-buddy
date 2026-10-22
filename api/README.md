@@ -52,7 +52,7 @@ git-ignored. Settings come from environment variables or `.env`; see
 | `PUT` | `/matches/{id}/players` | Name the players: `{"names": {"P1": "Maya", "P3": "Sara"}}`; an empty name clears one |
 | `POST` | `/matches/{id}/tags` | Name the person at a spot in the video: `{"time_s", "x", "y", "name", "player"}` (source pixels; `player` is the box clicked, if any). Before analysis it waits for it; after, a plain name is applied at once and a mix-up queues a relabel job |
 | `DELETE` | `/matches/{id}/tags/{tag}` | Take a tag back |
-| `GET` | `/matches/{id}/players/{P1-P4}` | One player in one match: their numbers, success rate per kind of shot, shots, best moments, highlight reel, winners reel and shorts |
+| `GET` | `/matches/{id}/players/{P1, P2, ...}` | One player in one match: their numbers, success rate per kind of shot, shots, best moments, highlight reel, winners reel and shorts |
 | `GET` | `/people` | Everyone named in any match, with how many matches each |
 | `GET` | `/people/{name}` | One person across all their matches, newest first (name match ignores case) |
 | `GET` | `/matches/{id}/files/{path}` | Any output: clips, reel, thumbnails, heatmaps, preview (supports Range for video seeking) |
@@ -77,11 +77,11 @@ git-ignored. Settings come from environment variables or `.env`; see
   match's files live. A cloud deployment either shares one disk between
   API and workers or swaps in an object-storage version of that class.
 - **Relabel jobs.** A tag that changes who is who queues a `relabel` job
-  instead of a full analysis: the engine re-runs only the identity repair,
+  instead of a full analysis: the engine re-runs only who is who,
   shots and the report from the saved track pieces, which takes seconds.
   A match runs one job at a time, so a tag added during analysis is applied
   right after it. Each tag is then marked applied or not.
-- **People are names.** A match stores which name played as P1-P4, so the
+- **People are names.** A match stores which name played as which player (P1, P2, ...), so the
   same name in several matches is one person. No accounts needed; when
   accounts arrive, a name can be linked to one.
 - **Claude key stays on the server.** Put `ANTHROPIC_API_KEY` in `.env` for

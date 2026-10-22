@@ -85,9 +85,7 @@ export default function Results({
               <tbody>
                 {tracking.players.map((p) => (
                   <tr key={p.player}>
-                    <td className={p.team === "A" ? "team-a" : "team-b"}>
-                      {p.player} <span className="muted small">team {p.team}</span>
-                    </td>
+                    <td>{p.player}</td>
                     <td>{pct(p.seen_fraction)}</td>
                     <td>{p.distance_m.toFixed(0)} m</td>
                     <td>{(p.avg_speed_mps * 3.6).toFixed(1)} km/h</td>
@@ -102,7 +100,8 @@ export default function Results({
             </table>
           </div>
           <p className="muted small">
-            P1/P2 started on the camera side. Net is within 3.5 m of the net, back is behind the service line.
+            Players are numbered in the order they first appear; anyone on court only briefly is left out. Net is
+            within 3.5 m of the net, back is behind the service line.
           </p>
           <div className="heatmaps">
             {tracking.players

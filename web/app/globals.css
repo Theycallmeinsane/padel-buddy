@@ -9,8 +9,6 @@
   --accent-text: #ffffff;
   --danger: #b3261e;
   --warn: #9a6700;
-  --team-a: #2d6fd6;
-  --team-b: #e0702b;
   --radius: 12px;
   color-scheme: light;
 }
@@ -27,8 +25,6 @@
     --accent-text: #08130d;
     --danger: #ff8a80;
     --warn: #e8b84a;
-    --team-a: #6ea4ff;
-    --team-b: #ff9d5c;
     color-scheme: dark;
   }
 }
@@ -116,8 +112,6 @@ table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; }
 .table-wrap { overflow-x: auto; }
-.team-a { color: var(--team-a); font-weight: 600; }
-.team-b { color: var(--team-b); font-weight: 600; }
 
 .heatmaps { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 .heatmaps figure { margin: 0; text-align: center; }

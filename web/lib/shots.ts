@@ -53,8 +53,16 @@ export function statsFromKinds(kinds: Partial<Record<ShotKind, number>>, errorsB
 /** "Winner by Maya", "Error by Ali (net)", or "" when how the point ended isn't known. */
 export function endingLabel(p: PointEnding | undefined, names: Record<string, string> = {}): string {
   if (!p || p.ending === "unknown") return "";
-  const who = p.last_player ? names[p.last_player] ?? p.last_player : p.last_team ? `team ${p.last_team}` : "";
+  const who = p.last_player ? names[p.last_player] ?? p.last_player : sideLabel(p, p.last_team, names);
   const what = p.ending === "winner" ? "Winner" : "Error";
   const detail = p.ending === "error" && p.detail ? ` (${p.detail})` : "";
   return `${what}${who ? ` by ${who}` : ""}${detail}`;
+}
+
+/** Who played a point on one side: "Maya & Sam", else "the near side" or "the far side"; "" for no side. */
+export function sideLabel(p: PointEnding, side: "A" | "B" | null, names: Record<string, string> = {}): string {
+  if (!side) return "";
+  const who = p.teams?.[side] ?? [];
+  if (who.length) return who.map((pid) => names[pid] ?? pid).join(" & ");
+  return side === "A" ? "the near side" : "the far side";
 }

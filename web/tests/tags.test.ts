@@ -5,8 +5,8 @@ import { liveNames, playerAt, suggestions, toSource } from "../lib/tags";
 const overlay = {
   size: [1920, 1080],
   players: {
-    P1: { team: "A", t: [10, 10.1], box: [100, 500, 300, 1000, 110, 500, 310, 1000], xy: [] },
-    P3: { team: "B", t: [10], box: [180, 520, 240, 700], xy: [] }, // further away, seen through P1
+    P1: { t: [10, 10.1], box: [100, 500, 300, 1000, 110, 500, 310, 1000], xy: [] },
+    P3: { t: [10], box: [180, 520, 240, 700], xy: [] }, // further away, seen through P1
   },
 } as unknown as Overlay;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PointEnding, ShotStat } from "../lib/api";
+import { byNumber, pairLabel, withNames, type PointEnding, type ShotStat } from "../lib/api";
 import { endingLabel, focusLine, keptInPlay, kindLabel, statsFromKinds } from "../lib/shots";
 
 const stat = (over: Partial<ShotStat>): ShotStat => ({
@@ -63,11 +63,26 @@ describe("how a point ended", () => {
       "Error by Ali (net)",
     );
     expect(endingLabel(point({ last_player: "P3", last_team: "B", won_by: "B" }), names)).toBe("Winner by P3");
-    expect(endingLabel(point({ last_player: null }), names)).toBe("Winner by team A");
+    expect(endingLabel(point({ last_player: null }), names)).toBe("Winner by the near side");
+    // Teams change point by point: whoever played it on that side.
+    expect(endingLabel(point({ last_player: null, teams: { A: ["P1", "P5"], B: ["P2", "P3"] } }), names)).toBe(
+      "Winner by Maya & P5",
+    );
   });
 
   it("says nothing when it isn't known", () => {
     expect(endingLabel(point({ ending: "unknown", won_by: null }), names)).toBe("");
     expect(endingLabel(undefined, names)).toBe("");
+  });
+});
+
+describe("names in engine text", () => {
+  it("swaps numbers and pairs for names, P10 included", () => {
+    const names = { P1: "Maya", P3: "Sam", P10: "Kim" };
+    expect(withNames("P1+P3 played split; P10 and P1 lobbed; P2 too", names)).toBe(
+      "Maya & Sam played split; Kim and Maya lobbed; P2 too",
+    );
+    expect(pairLabel("P2+P10", names)).toBe("P2 & Kim");
+    expect(["P10", "P2", "P1"].sort(byNumber)).toEqual(["P1", "P2", "P10"]);
   });
 });

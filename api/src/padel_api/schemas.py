@@ -31,7 +31,7 @@ class TagIn(BaseModel):
     x: float = Field(..., description="A point on the person, in source video pixels")
     y: float
     name: str = Field(..., min_length=1, max_length=60)
-    player: str | None = Field(None, description="The box clicked (P1-P4), when the match is already analysed")
+    player: str | None = Field(None, description="The box clicked (P1, P2, ...), when the match is already analysed")
 
 
 class TagOut(BaseModel):
@@ -89,7 +89,7 @@ class AnalyzeIn(BaseModel):
 
 class PlayerNamesIn(BaseModel):
     names: dict[str, str] = Field(
-        ..., description="Player id (P1-P4) -> name; an empty name clears it.", examples=[{"P1": "Maya"}]
+        ..., description="Player id (P1, P2, ...) -> name; an empty name clears it.", examples=[{"P1": "Maya"}]
     )
 
 
@@ -101,7 +101,6 @@ class PlayerOut(BaseModel):
     match_date: datetime
     player: str
     name: str | None
-    team: str | None
     report: dict | None  # engine PlayerReport
     shots: list[dict]  # engine ShotInfo, this player's only
     reel: str | None  # path for /matches/{id}/files/

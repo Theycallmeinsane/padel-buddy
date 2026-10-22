@@ -123,7 +123,6 @@ function PersonView({ api, name }: { api: Api; name: string }) {
             </h2>
             <span className="muted small">
               {new Date(e.match_date).toLocaleDateString()} · {e.player}
-              {e.team ? ` · team ${e.team}` : ""}
             </span>
           </div>
           {e.report ? (

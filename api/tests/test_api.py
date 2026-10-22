@@ -320,6 +320,7 @@ def _fake_report_runner(video, run_dir, calibration, config, on_progress, tags=(
     report = build_report(summary, overlay, mf.clips())
     from padel_engine.schemas import Short
 
+    (run_dir / "summary.json").write_text(json.dumps({"players": [{"player": p} for p in overlay["players"]]}))
     report.players[2].reel = "players/P3.mp4"
     report.players[2].winners_reel = "players/P3_winners.mp4"
     report.shorts = [
@@ -338,13 +339,13 @@ def test_players_are_named_and_found_across_matches(client, settings, tmp_path):
 
     r = client.put(f"/matches/{m['id']}/players", json={"names": {"P3": "Maya", "P1": "  Ali   Khan "}})
     assert r.status_code == 200 and r.json()["player_names"] == {"P1": "Ali Khan", "P3": "Maya"}
-    assert client.put(f"/matches/{m['id']}/players", json={"names": {"P5": "x"}}).status_code == 422
+    assert client.put(f"/matches/{m['id']}/players", json={"names": {"Q5": "x"}}).status_code == 422
 
     res = client.get(f"/matches/{m['id']}/results").json()
     assert res["report"]["points"] == 3 and len(res["shots"]["shots"]) == 14
 
     p3 = client.get(f"/matches/{m['id']}/players/P3").json()
-    assert (p3["name"], p3["team"], p3["reel"]) == ("Maya", "B", "players/P3.mp4")
+    assert (p3["name"], p3["reel"], p3["report"]["partners"]) == ("Maya", "players/P3.mp4", {"P4": 3})
     assert p3["winners_reel"] == "players/P3_winners.mp4"
     assert [x["file"] for x in p3["shorts"]] == ["shorts/P3_winner.mp4"]
     assert p3["report"]["winners"] == 1 and {s["player"] for s in p3["shots"]} == {"P3"}
@@ -448,18 +449,17 @@ def test_tags_name_players_and_fix_mix_ups(client, settings, tmp_path):
     assert relabelled == [(True, ["Maya", "Ali", "Maya"])] and m["status"] == "done"  # one spelling per person
     assert [t["applied"] for t in m["tags"]] == [True, True, False]  # the engine could not apply the last one
 
-    # Four players: a fifth name is refused.
-    for name, pid in (("Sam", "P2"), ("Jo", "P4")):
+    # Any number of people can be named: people rotate in.
+    for name, pid in (("Sam", "P2"), ("Jo", "P4"), ("Kim", "P5")):
         assert client.post(f"/matches/{mid}/tags", json={"time_s": 1, "x": 1, "y": 1, "name": name, "player": pid}).status_code == 201
-    r = client.post(f"/matches/{mid}/tags", json={"time_s": 1, "x": 1, "y": 1, "name": "Kim", "player": "P2"})
-    assert r.status_code == 409
+    assert client.get(f"/matches/{mid}").json()["player_names"] == {"P1": "Maya", "P2": "Sam", "P3": "Ali", "P4": "Jo", "P5": "Kim"}
 
     # Renaming a player renames their tags; taking back a tag that held decides who is who again.
     m = client.put(f"/matches/{mid}/players", json={"names": {"P3": "Ali Khan"}}).json()
     assert [t["name"] for t in m["tags"]].count("Ali Khan") == 1
     assert client.delete(f"/matches/{mid}/tags/nope").status_code == 404
     m = client.delete(f"/matches/{mid}/tags/{m['tags'][0]['id']}").json()
-    assert len(m["tags"]) == 4 and m["job"]["kind"] == "relabel"
+    assert len(m["tags"]) == 5 and m["job"]["kind"] == "relabel"
 
 
 def test_a_match_s_jobs_run_one_at_a_time(client, settings, tmp_path):
@@ -512,3 +512,36 @@ def test_results_so_far_are_served_while_analysing_and_after_a_failure(client, s
     worker.run_once(Database(settings.db_url), LocalStorage(settings.data_dir), "test", finished)
     match = client.get(f"/matches/{mid}").json()
     assert match["status"] == "done" and match["live"] is None
+
+
+def test_a_name_typed_for_a_player_becomes_a_tag_on_them(client, settings, tmp_path):
+    """So the name stays with the person when who is who is decided again, and can join two numbers."""
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "Sunday"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+
+    def tracked(video, run_dir, calibration, config, on_progress, tags=()):
+        lines = ["frame,time_s,player,team,track_id,confidence,x1,y1,x2,y2,court_x,court_y,segment"]
+        for k in range(20):
+            lines.append(f"{k},{k / 10},P1,A,1,0.9,100,100,200,400,3,4,0")
+            lines.append(f"{k},{k / 10},P5,B,2,0.9,500,100,600,400,7,16,1")
+        (run_dir / "tracks.csv").write_text("\n".join(lines) + "\n")
+        (run_dir / "segments.json").write_text("{}")
+        (run_dir / "summary.json").write_text(json.dumps({"players": [{"player": "P1"}, {"player": "P5"}]}))
+
+    client.post(f"/matches/{mid}/analyze")
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    assert worker.run_once(db, storage, "test", tracked)
+
+    m = client.put(f"/matches/{mid}/players", json={"names": {"P5": "Maya"}}).json()
+    (tag,) = m["tags"]
+    assert m["player_names"] == {"P5": "Maya"} and m["job"]["kind"] == "analyze"  # shown at once, no job
+    assert (tag["name"], tag["player"], tag["applied"], tag["x"], tag["y"]) == ("Maya", "P5", True, 550, 205)
+    assert client.get(f"/matches/{mid}/players/P5").json()["name"] == "Maya"
+    assert client.get(f"/matches/{mid}/players/P4").status_code == 404
+
+    # P1 is Maya too: the two numbers are one person, decided again in the background.
+    m = client.put(f"/matches/{mid}/players", json={"names": {"P1": "maya"}}).json()
+    assert m["player_names"] == {"P5": "Maya"} and [t["name"] for t in m["tags"]] == ["Maya", "Maya"]
+    assert m["tags"][1]["player"] == "P1" and m["tags"][1]["applied"] is None and m["job"]["kind"] == "relabel"

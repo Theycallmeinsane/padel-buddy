@@ -13,7 +13,7 @@ Flow for one match:
     PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
     POST /matches/{id}/tags               name the person at a spot at a moment (fixes mix-ups too)
     DELETE /matches/{id}/tags/{tag}       take a tag back
-    GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
+    GET  /matches/{id}/players/{P1, P2...} one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
     GET  /people                          everyone named in any match
     GET  /people/{name}                   one person across all their matches
@@ -49,7 +49,7 @@ from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
 
 _RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
-PLAYER_IDS = ("P1", "P2", "P3", "P4")
+_PLAYER = re.compile(r"P[1-9][0-9]{0,2}")  # players are numbered P1, P2, ... as they first appear
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -283,29 +283,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def name_players(
         body: PlayerNamesIn, match: Match = Depends(load_match), session: Session = Depends(get_session)
     ) -> MatchOut:
-        unknown = set(body.names) - set(PLAYER_IDS)
+        """Name players by number.
+
+        A new name becomes a tag on that player (see ``spot_for``), so it
+        stays with the person when who is who is decided again. A name
+        another player already has says they are one person: who is who is
+        decided again.
+        """
+        from padel_engine.tags import spot_for
+
+        unknown = sorted(pid for pid in body.names if not _PLAYER.fullmatch(pid))
         if unknown:
-            raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}; got {', '.join(sorted(unknown))}")
+            raise HTTPException(422, f"Players are P1, P2, ...; got {', '.join(unknown)}")
         match = session.merge(match)
         names = dict(match.player_names or {})
         tags = list(match.tags or [])
-        forgot = False
+        rows = None
+        regroup = False
         for pid, name in body.names.items():
             name = _clean_name(name)
             old = names.get(pid)
             if old and old != name:
                 # Tags carry the name: a renamed player keeps their tags, a cleared one loses them.
                 same = [t for t in tags if _same_name(t["name"], old)]
-                forgot |= not name and any(t.get("applied") for t in same)
+                regroup |= not name and any(t.get("applied") for t in same)
                 tags = [{**t, "name": name} if t in same else t for t in tags if name or t not in same]
-            if name:
+            if not name:
+                names.pop(pid, None)
+                continue
+            holder = next((p for p, n in names.items() if p != pid and _same_name(n, name)), None)
+            name = names[holder] if holder else name
+            if not any(_same_name(t["name"], name) and t.get("player") == pid for t in tags):
+                rows = _rows(storage.run_dir(match.id)) if rows is None else rows
+                spot = spot_for(rows, pid)
+                if spot is not None:
+                    held = match.status == "done" and holder is None
+                    tags.append(_tag(spot.time_s, spot.x, spot.y, name, pid, applied=True if held else None))
+                    regroup |= not held
+            if holder is None:
                 names[pid] = name
             else:
-                names.pop(pid, None)
+                names.pop(pid, None)  # the name stays with whoever has it until they are joined
         match.player_names = names or None
         match.tags = tags or None
         session.commit()
-        if forgot:
+        if regroup:
             queue_relabel(session, match)
         return match_out(match)
 
@@ -320,8 +342,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from the last time that player passed close to someone. A tag on a
         frame rather than a box is placed the same way, in the background.
         """
-        if body.player is not None and body.player not in PLAYER_IDS:
-            raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}")
+        if body.player is not None and not _PLAYER.fullmatch(body.player):
+            raise HTTPException(422, "Players are P1, P2, ...")
         name = _clean_name(body.name)
         if not name:
             raise HTTPException(422, "Give the player a name")
@@ -341,16 +363,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if holder is not None:
                 names.pop(holder)  # a name given without a tag moves to whoever was tagged
             names[body.player] = name
-        everyone = {n.casefold() for n in names.values()} | tagged | {name.casefold()}
-        if len(everyone) > len(PLAYER_IDS):
-            raise HTTPException(
-                409, "This match already has four names. Tag one of them, or rename a player in the report first."
-            )
-        tag = {
-            "id": new_id()[:12], "time_s": round(body.time_s, 3), "x": round(body.x, 1), "y": round(body.y, 1),
-            "name": name, "player": body.player, "applied": True if shown and not mixed_up else None,
-            "created_at": now().isoformat(),
-        }
+        tag = _tag(body.time_s, body.x, body.y, name, body.player, applied=True if shown and not mixed_up else None)
         match.tags = [*tags, tag]
         match.player_names = names or None
         session.commit()
@@ -390,9 +403,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/matches/{match_id}/players/{player}", dependencies=auth)
     def player(player: str, match: Match = Depends(load_match)) -> PlayerOut:
-        if player not in PLAYER_IDS:
-            raise HTTPException(404, f"Players are {', '.join(PLAYER_IDS)}")
-        return _player_out(match, player, storage.run_dir(match.id))
+        run = storage.run_dir(match.id)
+        known = set()
+        for name in ("summary.json", "report.json"):
+            if (run / name).exists():
+                known |= {p["player"] for p in json.loads((run / name).read_bytes()).get("players", [])}
+        if player not in known:
+            raise HTTPException(404, f"No player {player} in this match")
+        return _player_out(match, player, run)
 
     @app.get("/matches/{match_id}/report.md", dependencies=auth)
     def report_markdown(match: Match = Depends(load_match)) -> Response:
@@ -513,6 +531,25 @@ def _upload_status(match: Match) -> UploadStatus:
     return UploadStatus(received=match.video_received, total=match.video_size, complete=_uploaded(match))
 
 
+def _rows(run: Path) -> list[dict]:
+    """Every tracked box so far: tracks.csv once tracking is done, overlay.json while it runs."""
+    from padel_engine.pipeline import read_tracks
+    from padel_engine.tags import overlay_rows
+
+    if (run / "tracks.csv").exists():
+        return read_tracks(run / "tracks.csv")
+    if (run / "overlay.json").exists():
+        return overlay_rows(json.loads((run / "overlay.json").read_bytes()))
+    return []
+
+
+def _tag(time_s: float, x: float, y: float, name: str, player: str | None, applied: bool | None) -> dict:
+    return {
+        "id": new_id()[:12], "time_s": round(time_s, 3), "x": round(x, 1), "y": round(y, 1), "name": name,
+        "player": player, "applied": applied, "created_at": now().isoformat(),
+    }
+
+
 def _clean_name(name: str) -> str:
     return " ".join(name.split())[:60]
 
@@ -562,7 +599,6 @@ def _player_out(match: Match, player: str, run: Path) -> PlayerOut:
         match_date=match.created_at,
         player=player,
         name=(match.player_names or {}).get(player),
-        team=mine["team"] if mine else None,
         report=mine,
         shots=[s for s in shots if s["player"] == player],
         reel=mine.get("reel") if mine else None,
