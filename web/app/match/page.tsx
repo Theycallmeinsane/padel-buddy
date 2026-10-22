@@ -7,8 +7,10 @@ import Calibrator from "@/components/Calibrator";
 import MatchViewer from "@/components/MatchViewer";
 import Report from "@/components/Report";
 import Results from "@/components/Results";
+import { PlayerTagger } from "@/components/Tags";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
-import { Api, ApiError, type Match, type Results as ResultsData } from "@/lib/api";
+import { Api, ApiError, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
+import { suggestions } from "@/lib/tags";
 
 // Static export can't pre-render one page per match, so the id is a query
 // parameter: /match/?id=...
@@ -29,10 +31,14 @@ function MatchView() {
   const [match, setMatch] = useState<Match | null>(null);
   const [results, setResults] = useState<ResultsData | null>(null);
   const [calibrating, setCalibrating] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const [people, setPeople] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [seekTo, setSeekTo] = useState<{ t: number; n: number } | null>(null);
   const names = useMemo(() => match?.player_names ?? {}, [match?.player_names]);
+  const tags = useMemo(() => match?.tags ?? [], [match?.tags]);
+  const known = useMemo(() => suggestions(names, people), [names, people]);
   const seek = useCallback((t: number) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 })), []);
 
   const refresh = useCallback(async () => {
@@ -48,6 +54,11 @@ function MatchView() {
   useEffect(() => {
     if (id) refresh();
   }, [id, refresh]);
+
+  // Everyone named in earlier matches, offered when naming players here.
+  useEffect(() => {
+    api.people().then((list) => setPeople(list.map((p) => p.name)), () => {});
+  }, [api]);
 
   // Follow progress while the worker is busy.
   useEffect(() => {
@@ -75,6 +86,23 @@ function MatchView() {
     }
   }
 
+  async function addTag(tag: TagIn): Promise<string | null> {
+    try {
+      setMatch(await api.addTag(id, tag));
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
+  async function deleteTag(tagId: string) {
+    try {
+      setMatch(await api.deleteTag(id, tagId));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function remove() {
     if (!confirm("Delete this match and all its clips?")) return;
     try {
@@ -91,7 +119,8 @@ function MatchView() {
 
   const uploaded = !["created", "uploading"].includes(match.status);
   const busy = ACTIVE.has(match.status);
-  const step = match.status === "done" ? 3 : match.calibrated || match.job ? 2 : 1;
+  const relabelling = busy && match.job?.kind === "relabel";
+  const step = match.status === "done" || results ? 3 : match.calibrated || match.job ? 2 : 1;
 
   return (
     <>
@@ -122,7 +151,18 @@ function MatchView() {
             <span className={step === 2 ? "on" : ""}>2 · Analyse</span>
             <span className={step === 3 ? "on" : ""}>3 · Watch</span>
           </div>
-          {calibrating ? (
+          {naming ? (
+            <PlayerTagger
+              api={api}
+              matchId={id}
+              durationS={match.duration_s}
+              tags={tags}
+              suggestions={known}
+              onTag={addTag}
+              onDelete={deleteTag}
+              onDone={() => setNaming(false)}
+            />
+          ) : calibrating ? (
             <Calibrator
               api={api}
               matchId={id}
@@ -144,6 +184,11 @@ function MatchView() {
                 <button onClick={() => setCalibrating(true)} disabled={busy}>
                   {match.calibrated ? "Recalibrate court" : "Calibrate court"}
                 </button>
+                {match.calibrated && (
+                  <button onClick={() => setNaming(true)}>
+                    {tags.length ? `Named players (${new Set(tags.map((t) => t.name.toLowerCase())).size})` : "Name players"}
+                  </button>
+                )}
                 <button className="primary" onClick={analyze} disabled={busy}>
                   {match.job ? "Analyse again" : "Analyse"}
                 </button>
@@ -153,7 +198,11 @@ function MatchView() {
           {busy && match.job && (
             <div style={{ marginTop: 16 }}>
               <p className="small muted" style={{ margin: "0 0 6px" }}>
-                {match.status === "queued" ? "Waiting for a worker…" : `Analysing… ${Math.round(match.job.progress * 100)}%`}
+                {relabelling
+                  ? `Updating who is who from your tags… ${Math.round(match.job.progress * 100)}%`
+                  : match.status === "queued"
+                    ? "Waiting for a worker…"
+                    : `Analysing… ${Math.round(match.job.progress * 100)}%`}
               </p>
               <ProgressBar value={match.job.progress} />
             </div>
@@ -164,7 +213,6 @@ function MatchView() {
 
       {results && (
         <MatchViewer
-          key={match.job?.id}
           api={api}
           matchId={id}
           durationS={match.duration_s}
@@ -172,6 +220,12 @@ function MatchView() {
           names={names}
           focus={focus}
           seekTo={seekTo}
+          tags={tags}
+          suggestions={known}
+          onTag={addTag}
+          onDeleteTag={deleteTag}
+          updating={relabelling}
+          version={`${match.job?.id}:${match.job?.finished_at}`}
         />
       )}
       {results?.report && (

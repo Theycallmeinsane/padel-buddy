@@ -27,10 +27,11 @@ them one by one.
 | `court` | FIP court model in metres: keypoints, lines, depth zones |
 | `calibration` | Image ↔ court homography from clicked keypoints |
 | `detection` | `PersonTracker` interface; YOLO + ByteTrack implementation |
-| `players` | Four stable player ids from noisy detections |
+| `players` | Four stable player ids from noisy detections, and the repair that fixes swaps after the match is tracked |
+| `tags` | Names someone gave by clicking a player: which track piece each lands on, and which number each name takes |
 | `analytics` | Kalman smoothing, distance, speed, zones, heatmaps |
 | `render` | Calibration overlay, annotated preview, top-down court |
-| `pipeline` | `run_tracking(...)`, and `run_match(...)`: tracking then clips, the single entry point |
+| `pipeline` | `run_tracking(...)`, and `run_match(...)`: tracking then clips, the single entry point; `apply_tags(...)` re-decides who is who in a finished run |
 | `audio` | Streams audio through FFmpeg; ball-hit onsets and loudness |
 | `events` | Rallies, intense moments, clip windows and the highlight selection |
 | `clips` | `run_clips(...)`: cuts clips, thumbnails and the highlight reel with FFmpeg |
@@ -72,7 +73,7 @@ in [api/README.md](../api/README.md).
 ## Web app (`web/`)
 
 A static Next.js export: upload with pause and resume, in-browser court
-calibration, progress, the match viewer, the match report, each player's
+calibration, naming players by clicking them, progress, the match viewer, the match report, each player's
 highlights, a page per player across matches, the highlight reel, clip
 gallery, player table and heatmaps. Being static, the same build can be wrapped as the Android app
 (Capacitor) and the desktop app (Tauri) later without a server of its own.
@@ -89,7 +90,9 @@ gallery, player table and heatmaps. Being static, the same build can be wrapped 
 4. **Shots and mistakes.** Built: ball tracking and bounces, who hit each
    shot and its kind, how each point ended (winner, net, out), a match
    report with tips and an optional coach's summary, and each player's own
-   highlights and numbers, followed across matches by name.
+   highlights and numbers, followed across matches by name. Players are
+   named by clicking them on the video; a tag after a tracking mix-up
+   re-runs only the identity repair, shots and report.
 5. **Pose.** Forehand and backhand, technique notes, and a trained ball
    detector, once real footage is available to train and tune on.
 

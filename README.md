@@ -17,6 +17,7 @@ app, phones, an Android app and a desktop app.
 | 3 | API, job queue and storage | Built ([api/](api/)) |
 | 3 | Web app (desktop and phone browsers) | Built ([web/](web/)) |
 | 4 | Ball tracking, shots, how points ended, match report, success rate per shot, per-player highlights and winners, shorts, a clip per point | Built, awaiting real footage |
+| 4 | Naming players by clicking them, at setup or any moment while watching; a tag after a mix-up fixes the rest of the match | Built |
 | 5 | Pose (forehand / backhand, technique), automatic court detection | Later |
 
 ## Architecture

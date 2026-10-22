@@ -11,6 +11,8 @@ Flow for one match:
     GET  /matches/{id}/results            tracking, clips, ball, shots and report
     GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, overlay data
     PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
+    POST /matches/{id}/tags               name the person at a spot at a moment (fixes mix-ups too)
+    DELETE /matches/{id}/tags/{tag}       take a tag back
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
     GET  /people                          everyone named in any match
@@ -38,10 +40,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import __version__, jobs
-from .db import Database, Job, Match
+from .db import Database, Job, Match, new_id, now
 from .schemas import (
     AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, MatchCreate, MatchOut, PersonOut, PlayerNamesIn,
-    PlayerOut, UploadStatus,
+    PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
@@ -283,15 +285,105 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}; got {', '.join(sorted(unknown))}")
         match = session.merge(match)
         names = dict(match.player_names or {})
+        tags = list(match.tags or [])
+        forgot = False
         for pid, name in body.names.items():
-            name = " ".join(name.split())[:60]
+            name = _clean_name(name)
+            old = names.get(pid)
+            if old and old != name:
+                # Tags carry the name: a renamed player keeps their tags, a cleared one loses them.
+                same = [t for t in tags if _same_name(t["name"], old)]
+                forgot |= not name and any(t.get("applied") for t in same)
+                tags = [{**t, "name": name} if t in same else t for t in tags if name or t not in same]
             if name:
                 names[pid] = name
             else:
                 names.pop(pid, None)
         match.player_names = names or None
+        match.tags = tags or None
         session.commit()
+        if forgot:
+            queue_relabel(session, match)
         return _match_out(match)
+
+    @app.post("/matches/{match_id}/tags", status_code=201, dependencies=auth)
+    def add_tag(body: TagIn, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
+        """Name the person at a spot in the video at one moment.
+
+        Before analysis the tag waits for it. On a player's box in an
+        analysed match the name shows at once, unless an earlier tag gave
+        that name (or this player's name) to someone else: then tracking
+        mixed people up, and who is who is decided again in the background,
+        from the last time that player passed close to someone. A tag on a
+        frame rather than a box is placed the same way, in the background.
+        """
+        if body.player is not None and body.player not in PLAYER_IDS:
+            raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}")
+        name = _clean_name(body.name)
+        if not name:
+            raise HTTPException(422, "Give the player a name")
+        match = session.merge(match)
+        tags = list(match.tags or [])
+        names = dict(match.player_names or {})
+        name = next((n for n in [*names.values(), *(t["name"] for t in tags)] if _same_name(n, name)), name)
+        tagged = {t["name"].casefold() for t in tags}
+        holder = next((pid for pid, n in names.items() if _same_name(n, name)), None)
+        current = names.get(body.player) if body.player else None
+        shown = body.player is not None and match.status == "done"
+        mixed_up = shown and (
+            (holder not in (None, body.player) and name.casefold() in tagged)
+            or (current is not None and not _same_name(current, name) and current.casefold() in tagged)
+        )
+        if shown and not mixed_up:
+            if holder is not None:
+                names.pop(holder)  # a name given without a tag moves to whoever was tagged
+            names[body.player] = name
+        everyone = {n.casefold() for n in names.values()} | tagged | {name.casefold()}
+        if len(everyone) > len(PLAYER_IDS):
+            raise HTTPException(
+                409, "This match already has four names. Tag one of them, or rename a player in the report first."
+            )
+        tag = {
+            "id": new_id()[:12], "time_s": round(body.time_s, 3), "x": round(body.x, 1), "y": round(body.y, 1),
+            "name": name, "player": body.player, "applied": True if shown and not mixed_up else None,
+            "created_at": now().isoformat(),
+        }
+        match.tags = [*tags, tag]
+        match.player_names = names or None
+        session.commit()
+        if mixed_up or not shown or jobs.active_job(session, match.id) is not None:
+            # Who is who needs deciding again, or a running job started without this tag.
+            queue_relabel(session, match)
+        return _match_out(match)
+
+    @app.delete("/matches/{match_id}/tags/{tag_id}", dependencies=auth)
+    def delete_tag(tag_id: str, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
+        match = session.merge(match)
+        tags = list(match.tags or [])
+        gone = next((t for t in tags if t["id"] == tag_id), None)
+        if gone is None:
+            raise HTTPException(404, "No such tag")
+        match.tags = [t for t in tags if t is not gone] or None
+        session.commit()
+        if gone.get("applied"):
+            queue_relabel(session, match)
+        return _match_out(match)
+
+    def queue_relabel(session: Session, match: Match) -> None:
+        """Decide who is who again from the tags, after whatever is already queued or running.
+
+        A queued job reads the latest tags when it starts, so one is enough.
+        A run from before tags existed has no record of its track pieces:
+        its tags wait for the next analysis.
+        """
+        running = any(j.status == "running" for j in match.jobs)
+        pieces = (storage.run_dir(match.id) / "segments.json").exists()
+        if match.calibration is None or any(j.status == "queued" for j in match.jobs):
+            return
+        if not running and not (match.status == "done" and pieces):
+            return
+        config = next((j.config for j in reversed(match.jobs) if j.kind == "analyze"), None)
+        jobs.enqueue(session, match, config, kind="relabel")
 
     @app.get("/matches/{match_id}/players/{player}", dependencies=auth)
     def player(player: str, match: Match = Depends(load_match)) -> PlayerOut:
@@ -418,9 +510,17 @@ def _upload_status(match: Match) -> UploadStatus:
     return UploadStatus(received=match.video_received, total=match.video_size, complete=_uploaded(match))
 
 
+def _clean_name(name: str) -> str:
+    return " ".join(name.split())[:60]
+
+
+def _same_name(a: str, b: str) -> bool:
+    return a.casefold() == b.casefold()
+
+
 def _job_out(job: Job) -> JobOut:
     return JobOut(
-        id=job.id, status=job.status, progress=job.progress, error=job.error,
+        id=job.id, kind=job.kind, status=job.status, progress=job.progress, error=job.error,
         created_at=job.created_at, started_at=job.started_at, finished_at=job.finished_at,
     )
 
@@ -431,6 +531,7 @@ def _match_out(match: Match) -> MatchOut:
         id=match.id, title=match.title, created_at=match.created_at, status=match.status,
         video_size=match.video_size, video_received=match.video_received, duration_s=match.duration_s,
         calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
+        tags=[TagOut.model_validate(t) for t in match.tags or []],
         job=_job_out(latest) if latest else None,
     )
 

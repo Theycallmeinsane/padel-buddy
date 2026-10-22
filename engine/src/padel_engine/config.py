@@ -122,6 +122,17 @@ class TrackingConfig(BaseModel):
         description="How much closer (colour distance) a piece must be to another player's colours before "
         "the repair changes its number; keeps teammates in the same kit from being shuffled.",
     )
+    contact_m: float = Field(
+        1.0,
+        ge=0,
+        description="Players closer than this (court metres) may be swapped by the tracker, so their tracks "
+        "are cut where they part. A tag then fixes a name from that moment on; 0 never cuts.",
+    )
+    repair_at_contacts: bool = Field(
+        False,
+        description="Also let the colour repair re-decide who is who after every close pass, not only after "
+        "a gap. Off: a track cut where two players parted stays one person unless a tag says otherwise.",
+    )
 
 
 class AnalyticsConfig(BaseModel):
