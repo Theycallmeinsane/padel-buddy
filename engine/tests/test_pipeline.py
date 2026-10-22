@@ -105,6 +105,28 @@ def test_smoothing_removes_far_side_jitter():
     assert abs(smooth_d - true_d) < 0.25 * abs(raw_d - true_d)
 
 
+def test_top_speed_is_the_fastest_a_player_holds_for_a_second():
+    """A few sprints in a match of walking set it; one glitch or a number hopping to someone else does not."""
+    rng = np.random.default_rng(3)
+    t = np.arange(0, 1200, 0.1)
+    v = np.full_like(t, 0.8)
+    for start in rng.uniform(20, 1180, 12):  # twelve sprints at 5 m/s, held for about a second
+        d = t - start
+        v = np.where((d >= 0) & (d < 1.2), 5.0, v)
+    angle = np.cumsum(v) * 0.1 / 3.0  # round a 3 m circle, so the player stays on court
+    xy = np.column_stack([5 + 3 * np.cos(angle), 5 + 3 * np.sin(angle)]) + rng.normal(0, 0.05, (len(t), 2))
+    xy[6000] += [0.6, 0]  # one glitch
+    xy[9000:9030] += [0, 6.0]  # three seconds on someone 6 m away
+    cfg = AnalyticsConfig()
+    cov = np.broadcast_to(np.eye(2) * 0.05**2, (len(t), 2, 2))
+    s = analytics.smooth(analytics.Trajectory(t, xy), cfg, cov, max_speed_mps=8.0)
+    move = analytics.movement(s, cfg, 8.0)
+    assert 4.5 < move["top_speed_mps"] < 5.3
+    assert move["avg_speed_mps"] < 1.2
+    # The hop is not smoothed into a run there and back.
+    assert np.abs(np.diff(s.xy[8990:9040], axis=0)).max() > 5.0
+
+
 class ShrinkAware:
     """The scripted tracker as a real detector sees it: boxes in the pixels of the frame it was given."""
 

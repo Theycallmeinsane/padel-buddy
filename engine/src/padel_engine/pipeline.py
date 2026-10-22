@@ -346,7 +346,7 @@ def _player_stats(
         feet = np.array([((r["x1"] + r["x2"]) / 2, r["y2"]) for r in mine], dtype=np.float64).reshape(-1, 2)
         J = calib.jacobian(feet)
         meas_cov = cfg.analytics.foot_pixel_noise**2 * J @ J.transpose(0, 2, 1)
-        smooth = analytics.smooth(traj, cfg.analytics, meas_cov, cache)
+        smooth = analytics.smooth(traj, cfg.analytics, meas_cov, cache, cfg.tracking.max_speed_mps)
         smoothed[pid] = smooth
         move = analytics.movement(smooth, cfg.analytics, cfg.tracking.max_speed_mps)
         all_xy.append(smooth.xy)

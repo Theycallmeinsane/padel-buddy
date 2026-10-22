@@ -25,7 +25,7 @@ class PlayerStats(BaseModel):
     seen_fraction: float  # share of analysed frames the player was located in
     distance_m: float
     avg_speed_mps: float
-    top_speed_mps: float  # 95th percentile, robust to tracking jitter
+    top_speed_mps: float  # fastest held for a second (99.9th percentile of 1 s averages)
     zone_share: dict[str, float]  # net / mid / back, fractions of time seen
     side_share: dict[str, float]  # left / right half of their own court, from the player's view
     heatmap: str | None = None  # relative path inside the run folder
@@ -173,7 +173,7 @@ class PlayerReport(BaseModel):
     errors_by_kind: dict[str, int]  # the kind of shot that ended the point in an error
     # Movement during points only, so walking between points doesn't count
     distance_per_point_m: float
-    top_speed_mps: float  # 95th percentile during points
+    top_speed_mps: float  # fastest held for a second during points (as PlayerStats)
     zone_share: dict[str, float]  # net / mid / back, during points
     side_share: dict[str, float]
     highlights: list[PlayerMoment] = []
