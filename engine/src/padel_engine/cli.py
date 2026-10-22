@@ -215,7 +215,7 @@ def _print_tracking(summary, out: Path) -> None:
     typer.echo(f"\nTracking results in {out}/")
     for p in summary.players:
         typer.echo(
-            f"  {p.player} (team {p.team}): seen {p.seen_fraction:4.0%}  "
+            f"  {p.player}: seen {p.seen_fraction:4.0%}  "
             f"{p.distance_m:6.0f} m  net {p.zone_share['net']:4.0%}  back {p.zone_share['back']:4.0%}"
         )
 
@@ -245,7 +245,10 @@ def _print_report(report, out: Path) -> None:
         f"Report: {out}/report.md"
     )
     for t in report.teams:
-        typer.echo(f"  Team {t.team} ({', '.join(t.players)}): won {t.points_won}, {t.winners} winners, {t.errors} errors")
+        typer.echo(
+            f"  {' and '.join(t.players)}: won {t.points_won} of {t.points} points together, {t.winners} winners, "
+            f"{t.errors} errors"
+        )
     for p in report.players:
         reel = f"  reel {out}/{p.reel}" if p.reel else ""
         typer.echo(f"  {p.player}: {p.shots} shots, {p.winners} winners, {p.errors} errors{reel}")
