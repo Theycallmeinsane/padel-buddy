@@ -91,6 +91,15 @@ def side_of(y: float) -> str:
     return "near" if y < NET_Y else "far"
 
 
+def team_at(y: float) -> str:
+    """The team of someone standing at court y: "A" on the camera's side of the net, "B" beyond it.
+
+    People rotate in and swap partners, so a team is whoever shares a half
+    during a point, not a fixed pair.
+    """
+    return "A" if y < NET_Y else "B"
+
+
 def zone_of(y: float) -> str:
     """Return the depth zone name for a court y coordinate."""
     d = abs(y - NET_Y)

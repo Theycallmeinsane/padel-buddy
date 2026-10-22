@@ -1,7 +1,7 @@
 """A scripted match for the shots and report tests: players, hit sounds and the ball.
 
-Team A: P1 deep near-left, P2 at the net near-right. Team B: P3 deep
-far-left, P4 at the net far-right. Three points:
+Team A (the camera's side): P1 deep near-left, P2 at the net near-right.
+Team B: P3 deep far-left, P4 at the net far-right. Three points:
 
 0. Eight shots and a glass hit; P3 wins it with a ball that bounces in.
 1. P1 serves, an unseen return, P2 volleys into the net.
@@ -22,7 +22,6 @@ from synthetic import H, W, Camera, person_bbox
 CAM = Camera()
 FPS = 30.0
 SPOTS = {"P1": (3.0, 2.0), "P2": (7.0, 7.5), "P3": (3.0, 18.0), "P4": (7.0, 12.0)}
-TEAMS = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
 RALLIES = [(0, 1.0, 10.0), (1, 20.0, 22.4), (2, 30.0, 32.0)]
 
 # (time, where the ball is in 3D when the sound is heard, expected player, expected kind)
@@ -62,9 +61,8 @@ def overlay() -> dict:
     for pid in SPOTS:
         xy = np.array([position(pid, s) for s in t])
         boxes = np.array([person_bbox(CAM, p) for p in xy])
-        players[pid] = {"team": TEAMS[pid], "t": t.tolist(), "box": boxes.round().reshape(-1).tolist(),
-                        "xy": xy.round(2).reshape(-1).tolist()}
-    return {"version": 1, "size": [W, H], "fps": 10.0, "court_to_image": calibration().H_inv.tolist(),
+        players[pid] = {"t": t.tolist(), "box": boxes.round().reshape(-1).tolist(), "xy": xy.round(2).reshape(-1).tolist()}
+    return {"version": 2, "size": [W, H], "fps": 10.0, "court_to_image": calibration().H_inv.tolist(),
             "lines": [], "players": players}
 
 

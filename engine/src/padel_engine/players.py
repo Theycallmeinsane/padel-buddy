@@ -1,38 +1,32 @@
-"""Turn per-frame person detections into four persistent players.
+"""Follow the people on court frame by frame, and cut their tracks into pieces.
 
 Short-term trackers (ByteTrack) lose and re-number people whenever they are
-occluded, bend down, or cross each other. This module keeps four stable
-player slots on top of that, using court position (in metres, so speeds are
-physical), clothing colour and the tracker's id as a tie-breaker.
+occluded, bend down, or cross each other. This module keeps four live slots
+on top of that, one per person on court, using court position (in metres, so
+speeds are physical), clothing colour and the tracker's id as a tie-breaker.
 
-Slots are seeded by where players stand when first seen:
-    P1 near-left, P2 near-right  -> team A (camera side at the start)
-    P3 far-left,  P4 far-right   -> team B
-and then follow their player through side switches and changeovers.
+Slots are seeded by where people stand when first seen (P1 near-left, P2
+near-right, P3 far-left, P4 far-right) and then follow their person through
+side switches and changeovers. A slot is only a lane, not a person: who is
+who is decided after the match (identity.py).
 
 People watching stand just outside the glass, by the net posts and the side
-fences, so only someone inside the lines can become a player or replace a
-lost one, and a player followed outside the lines for long is let go.
+fences, so only someone inside the lines can be picked up by a free slot,
+and someone followed outside the lines for long is let go.
 
-A player who vanishes (off frame, hidden behind someone, missed by the
-detector) keeps their number and nobody else takes it: whoever was seen a
+A person who vanishes (off frame, hidden behind someone, missed by the
+detector) keeps their slot and nobody else takes it: whoever was seen a
 moment ago wins over them, and nobody is moved onto someone who clearly looks
-different unless the tracker says it is still the same person. After the
-match, a repair pass cuts each slot's track wherever it broke and gives every
-piece to the player whose shirt it matches, so a mix-up the live pass made is
-undone when the player returns.
+different unless the tracker says it is still the same person.
 
-Tracks are also cut where two players part after passing close, the moment
-the tracker may have swapped them. The repair keeps those pieces together
-unless a tag (someone naming a player in the video) says otherwise: a tag
-pins its piece to that player, and the pieces after it follow until the
-track breaks or the next tag.
+Each slot's track is cut into pieces (``Segment``) wherever it broke (a gap,
+an impossible jump, a release) and where two people part after passing
+close, the moment the tracker may have swapped them. Each piece keeps its
+colours, times and places, for identity.py to group into people.
 """
 
 from __future__ import annotations
 
-import bisect
-import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,8 +39,7 @@ from . import court
 from .config import TrackingConfig
 from .detection import Detection
 
-PLAYER_IDS = ("P1", "P2", "P3", "P4")
-TEAM_OF = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
+SLOTS = ("P1", "P2", "P3", "P4")  # live lanes, one per person on court
 _START_SIDE = {"P1": "near", "P2": "near", "P3": "far", "P4": "far"}
 
 _INFEASIBLE = 1e6
@@ -99,17 +92,28 @@ class Segment:
     costs a few hundred bytes per segment, not one histogram per frame.
     """
 
-    player_id: str  # the live pass's label
+    player_id: str  # the live pass's slot
     first: int  # first and last analysed frame (assign call) it covers
     last: int = -1
     frames: int = 0
     clear: int = 0  # frames whose colours were seen clearly
     colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(APPEARANCE_SHAPE))
     after: int | None = None  # the segment it continues, when cut only because two players parted
+    inside: int = 0  # frames inside the lines
+    start_t: float = 0.0  # seconds, and court metres, where it starts and ends
+    end_t: float = 0.0
+    start_xy: tuple[float, float] = (0.0, 0.0)
+    end_xy: tuple[float, float] = (0.0, 0.0)
 
-    def add(self, frame: int, appearance: np.ndarray | None) -> None:
-        self.last = frame
+    def add(
+        self, frame: int, appearance: np.ndarray | None, t: float = 0.0, xy=(0.0, 0.0), inside: bool = True
+    ) -> None:
+        xy = (round(float(xy[0]), 3), round(float(xy[1]), 3))
+        if not self.frames:
+            self.start_t, self.start_xy = t, xy
+        self.last, self.end_t, self.end_xy = frame, t, xy
         self.frames += 1
+        self.inside += inside
         if appearance is not None:
             self.colour_sum += appearance
             self.clear += 1
@@ -127,7 +131,7 @@ class PlayerAssigner:
     frames: int = field(init=False)
 
     def __post_init__(self) -> None:
-        self.slots = {pid: _Slot(pid) for pid in PLAYER_IDS}
+        self.slots = {pid: _Slot(pid) for pid in SLOTS}
         self.segments = []
         self.frames = 0
 
@@ -168,10 +172,6 @@ class PlayerAssigner:
             self._update(self.slots[pid], candidates[idx], time_s, idx in in_lines, idx in learn, near)
         self.frames += 1
         return result
-
-    def identities(self, pins: dict[int, str] | None = None) -> list[str]:
-        """Who each of ``segments`` is: repaired by colour (unless the repair is off) and by ``pins``."""
-        return repair_identities(self.segments, self.cfg, pins)
 
     # -- internals --------------------------------------------------------
 
@@ -251,7 +251,7 @@ class PlayerAssigner:
         for side in ("near", "far"):
             open_slots = [
                 pid
-                for pid in PLAYER_IDS
+                for pid in SLOTS
                 if _START_SIDE[pid] == side and not self.slots[pid].initialised
             ]
             if not open_slots:
@@ -274,7 +274,7 @@ class PlayerAssigner:
             or gap > cfg.segment_gap_s
             or np.linalg.norm(cand.court_xy - slot.xy) > cfg.base_gate_m + cfg.max_speed_mps * gap
         ):
-            # After a gap or a jump this may be someone else; the repair decides.
+            # After a gap or a jump this may be someone else; identity.py decides.
             slot.segment = len(self.segments)
             self.segments.append(Segment(slot.player_id, self.frames))
         elif slot.contact and not near:
@@ -283,7 +283,7 @@ class PlayerAssigner:
             self.segments.append(Segment(slot.player_id, self.frames, after=slot.segment))
             slot.segment = len(self.segments) - 1
         slot.contact = near
-        self.segments[slot.segment].add(self.frames, cand.appearance if learn else None)
+        self.segments[slot.segment].add(self.frames, cand.appearance if learn else None, time_s, cand.court_xy, inside)
 
         slot.xy = cand.court_xy.copy()
         slot.last_time = time_s
@@ -299,239 +299,6 @@ class PlayerAssigner:
             else:
                 m = self.cfg.appearance_momentum
                 slot.appearance = (1 - m) * slot.appearance + m * cand.appearance
-
-
-_SLOT = {pid: k for k, pid in enumerate(PLAYER_IDS)}
-# Which player sits on each of the four slots (-1: none running), for every
-# arrangement that uses no player twice: 209 of them.
-_STATES = [
-    s
-    for s in itertools.product(range(-1, 4), repeat=4)
-    if len([v for v in s if v >= 0]) == len({v for v in s if v >= 0})
-]
-_STATE_INDEX = {s: i for i, s in enumerate(_STATES)}
-_REPAIR_ROUNDS = 5
-
-
-def repair_identities(
-    segments: list[Segment], cfg: TrackingConfig, pins: dict[int, str] | None = None
-) -> list[str]:
-    """Give every segment to the player whose colours it matches, and to whom tags say.
-
-    Each player's reference colours start from their earliest long, clear
-    segment, so a mix-up later in the match cannot redefine who they are,
-    and are then rebuilt from every long segment given to them. A segment
-    keeps its live label unless its colours clearly say otherwise, and two
-    segments running at the same time never share a player.
-
-    Pieces cut only because two players parted stay together, as one track,
-    unless ``cfg.repair_at_contacts`` is on or a tag lands on that track.
-    ``pins`` (segment index -> player) are the tags: a pinned piece is that
-    player and teaches their colours first, and the pieces after it on the
-    same track lean to that player until the next pin. With the colour
-    repair off only the pins move anyone.
-    """
-    if not segments:
-        return []
-    live = [_SLOT[s.player_id] for s in segments]
-    chains = _chains(segments)
-    split = cfg.repair_at_contacts
-    units, prev = chains, None
-    if split:
-        units, prev = [], []
-        for chain in chains:
-            for n, i in enumerate(chain):
-                prev.append(len(units) - 1 if n else None)
-                units.append([i])
-    base = _repair(segments, units, [live[u[0]] for u in units], cfg, prev=prev)
-    if not pins:
-        return [PLAYER_IDS[k] for k in base]
-
-    pinned = {i: _SLOT[p] for i, p in pins.items()}
-    lean = {}  # piece after a pin on a tagged track -> that pin's player
-    for chain in chains:
-        last = None  # the last pin so far along this track
-        for i in chain:
-            last = pinned.get(i, last)
-            if last is not None:
-                lean[i] = last
-    # Tagged tracks are decided piece by piece, and so is every track running
-    # alongside a piece the tags moved, so the one it was swapped with at a
-    # close pass can swap back there.
-    moved = sorted((segments[i].first, segments[i].last) for i, k in lean.items() if k != base[i])
-    starts = [a for a, _ in moved]
-    reach = list(itertools.accumulate((b for _, b in moved), max))
-
-    def alongside(chain: list[int]) -> bool:
-        first, last = segments[chain[0]].first, segments[chain[-1]].last
-        k = bisect.bisect_right(starts, last)  # moved pieces starting before this track ends
-        return k > 0 and reach[k - 1] >= first
-
-    tagged = {i for c in chains if any(i in pinned for i in c) for i in c}
-    units, own, fixed, prev, weight = [], [], {}, [], []
-    for chain in chains:
-        if not split and chain[0] not in tagged and not alongside(chain):
-            units.append(chain)
-            own.append(base[chain[0]])
-            prev.append(None)
-            weight.append(1.0)
-            continue
-        for n, i in enumerate(chain):
-            if i in pinned:
-                fixed[len(units)] = pinned[i]
-            prev.append(len(units) - 1 if n else None)
-            units.append([i])
-            own.append(lean.get(i, base[i]))
-            # A tag outweighs the live pass: where the two disagree over one
-            # player, the track the tag is on keeps them.
-            weight.append(_LEAN_WEIGHT if i in lean else 1.0)
-    return [PLAYER_IDS[k] for k in _repair(segments, units, own, cfg, fixed, prev, weight)]
-
-
-def _chains(segments: list[Segment]) -> list[list[int]]:
-    """Segments grouped into tracks: each first piece with the pieces that continue it, in order."""
-    nxt = {s.after: i for i, s in enumerate(segments) if s.after is not None}
-    chains = []
-    for i, s in enumerate(segments):
-        if s.after is None:
-            chain = [i]
-            while chain[-1] in nxt and len(chain) <= len(segments):
-                chain.append(nxt[chain[-1]])
-            chains.append(chain)
-    return chains
-
-
-def _repair(
-    segments: list[Segment],
-    units: list[list[int]],
-    own: list[int],
-    cfg: TrackingConfig,
-    fixed: dict[int, int] | None = None,
-    prev: list[int | None] | None = None,
-    weight: list[float] | None = None,
-) -> list[int]:
-    """Each segment's player (slot index), deciding every unit (a run of segments) as one.
-
-    ``own`` is the player each unit has unless colours clearly say otherwise
-    (``weight`` times more clearly); ``fixed`` units are their player
-    whatever the colours. A unit with a ``prev`` (the unit before it on the
-    same track) leans, from the second round on, to whoever that one became.
-    """
-    fixed = fixed or {}
-    prev = prev or [None] * len(units)
-    weight = weight or [1.0] * len(units)
-    merged = [_merge(segments, u) for u in units]
-    slots = [_SLOT[segments[u[0]].player_id] for u in units]
-    labels = list(own)
-    min_clear = cfg.prototype_min_s * cfg.process_fps
-    teach = {u for u, m in enumerate(merged) if m.clear >= min_clear or (u in fixed and m.clear)}
-    protos: dict[int, np.ndarray] = {}
-    if cfg.repair_identities:
-        # What tags say comes first, then each player's earliest long stretch.
-        protos = _prototypes(merged, fixed, list(fixed))
-        for u in sorted(teach - set(fixed), key=lambda u: merged[u].first):
-            protos.setdefault(labels[u], merged[u].colour)
-    for _ in range(_REPAIR_ROUNDS):
-        cost = _label_costs(merged, own, protos, cfg, weight)
-        for u, k in fixed.items():
-            cost[u] = _PINNED
-            cost[u, k] = 0.0
-        new = _best_labels(merged, slots, cost)
-        follow = [own[u] if p is None or u in fixed else new[p] for u, p in enumerate(prev)]
-        if new == labels and follow == own:
-            break
-        labels, own = new, follow
-        if cfg.repair_identities:
-            protos = _prototypes(merged, dict(enumerate(labels)), teach)
-    out = [0] * len(segments)
-    for u, members in enumerate(units):
-        for i in members:
-            out[i] = labels[u]
-    return out
-
-
-_PINNED = 1e9  # cost of giving a pinned piece to anyone but its player
-_LEAN_WEIGHT = 2.0
-
-
-def _merge(segments: list[Segment], members: list[int]) -> Segment:
-    if len(members) == 1:
-        return segments[members[0]]
-    parts = [segments[i] for i in members]
-    merged = Segment(parts[0].player_id, parts[0].first, parts[-1].last, after=parts[0].after)
-    merged.frames = sum(p.frames for p in parts)
-    merged.clear = sum(p.clear for p in parts)
-    merged.colour_sum = sum(p.colour_sum for p in parts)
-    return merged
-
-
-def _prototypes(units: list[Segment], label: dict[int, int], use) -> dict[int, np.ndarray]:
-    """Each player's reference colours: the mean over the ``use`` units labelled as them."""
-    protos = {}
-    for k in range(len(PLAYER_IDS)):
-        mine = [units[u] for u in use if label.get(u) == k and units[u].clear]
-        if mine:
-            protos[k] = (sum(s.colour_sum for s in mine) / sum(s.clear for s in mine)).astype(np.float32)
-    return protos
-
-
-def _label_costs(
-    segments: list[Segment], own: list[int], protos: dict[int, np.ndarray], cfg: TrackingConfig,
-    weight: list[float],
-) -> np.ndarray:
-    """Cost of calling each segment each player: colour distance per clear frame, plus a fee for a new label."""
-    cost = np.zeros((len(segments), len(PLAYER_IDS)))
-    min_clear = cfg.repair_min_clear_s * cfg.process_fps
-    for i, s in enumerate(segments):
-        if s.clear and s.clear >= min_clear:
-            colour = s.colour
-            dist = {k: appearance_distance(colour, p) for k, p in protos.items()}
-            # A player with no reference colours is no evidence either way.
-            neutral = dist.get(own[i], 0.5)
-            cost[i] = [s.clear * dist.get(k, neutral) for k in range(len(PLAYER_IDS))]
-        fee = s.frames * cfg.repair_switch_cost * weight[i]
-        cost[i] += fee
-        cost[i, own[i]] -= fee
-    return cost
-
-
-def _best_labels(segments: list[Segment], slot: list[int], cost: np.ndarray) -> list[int]:
-    """Cheapest player for every segment, never the same one on two segments at once.
-
-    ``slot`` is the live slot each segment ran on. Sweeps through time
-    keeping, for each way the players can sit on the slots running at that
-    moment (at most 24), the cheapest labelling of everything so far. Exact,
-    and linear in the number of segments.
-    """
-    costs = cost.tolist()
-    # A segment covers frames first..last; at a shared frame, ends come first.
-    events = sorted(
-        [(s.first, 1, i) for i, s in enumerate(segments)] + [(s.last + 1, 0, i) for i, s in enumerate(segments)]
-    )
-    best = {_STATE_INDEX[(-1,) * 4]: 0.0}
-    back: list[bytearray] = []  # per event: each state's state before it
-    for _, starts, i in events:
-        j = slot[i]
-        nxt: dict[int, float] = {}
-        prev = bytearray(b"\xff") * len(_STATES)
-        for s, c in best.items():
-            state = _STATES[s]
-            options = [k for k in range(4) if k not in state] if starts else [-1]
-            for k in options:
-                t = _STATE_INDEX[state[:j] + (k,) + state[j + 1 :]]
-                c2 = c + costs[i][k] if starts else c
-                if c2 < nxt.get(t, np.inf):
-                    nxt[t], prev[t] = c2, s
-        best = nxt
-        back.append(prev)
-
-    labels = [0] * len(segments)
-    s = min(best, key=best.get)
-    for (_, starts, i), prev in zip(reversed(events), reversed(back)):
-        if starts:
-            labels[i] = _STATES[s][slot[i]]
-        s = prev[s]
-    return labels
 
 
 def _area(b: tuple[float, float, float, float]) -> float:
@@ -620,7 +387,7 @@ def appearance_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
     return float(total / weight) if weight else 0.5
 
 
-SEGMENTS_VERSION = 2  # 2: colours of three body parts
+SEGMENTS_VERSION = 3  # 2: colours of three body parts; 3: times, places and time inside the lines
 
 
 def save_segments(path: str | Path, segments: list[Segment]) -> None:
@@ -630,7 +397,8 @@ def save_segments(path: str | Path, segments: list[Segment]) -> None:
         colour = s.colour if s.clear else np.zeros(APPEARANCE_SHAPE)
         rows.append({
             "player": s.player_id, "first": s.first, "last": s.last, "frames": s.frames, "clear": s.clear,
-            "after": s.after, "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
+            "after": s.after, "inside": s.inside, "t": [round(s.start_t, 3), round(s.end_t, 3)],
+            "xy": [*s.start_xy, *s.end_xy], "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
         })
     Path(path).write_text(json.dumps({"version": SEGMENTS_VERSION, "segments": rows}, separators=(",", ":")))
 
@@ -641,7 +409,10 @@ def load_segments(path: str | Path) -> list[Segment]:
         raise ValueError(f"{path} was written by an older version; analyse the match again to name players")
     segments = []
     for r in data["segments"]:
-        s = Segment(r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"])
+        s = Segment(
+            r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"], inside=r["inside"],
+            start_t=r["t"][0], end_t=r["t"][1], start_xy=tuple(r["xy"][:2]), end_xy=tuple(r["xy"][2:]),
+        )
         s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(APPEARANCE_SHAPE) * s.clear
         segments.append(s)
     return segments

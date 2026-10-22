@@ -6,6 +6,10 @@ and nobody near it is the ball hitting the glass or the floor, not a shot.
 When the ball wasn't seen, the hitter's team follows from whose turn it was,
 since shots alternate between the teams.
 
+Teams are point by point: team A is whoever played the point on the camera's
+side of the net, team B the far side (people rotate in and swap partners).
+Each point lists who was on each side.
+
 A shot's kind comes from its place in the point (serve, return), where the
 ball was against the hitter (above their head: an overhead), where the hitter
 stood (at the net: a volley), where the ball went next (deep and long in the
@@ -59,29 +63,61 @@ class Seen:
     xy: np.ndarray
 
 
-class Players:
-    """Every player's boxes and smoothed court positions over time (overlay.json)."""
+Track = tuple[np.ndarray, np.ndarray, np.ndarray]  # times, boxes, court positions
 
-    def __init__(self, overlay: dict):
-        self.tracks = {}
-        for pid, p in overlay.get("players", {}).items():
-            t = np.asarray(p["t"], dtype=np.float64)
-            self.tracks[pid] = (
-                p["team"],
-                t,
-                np.asarray(p["box"], dtype=np.float64).reshape(-1, 4),
-                np.asarray(p["xy"], dtype=np.float64).reshape(-1, 2),
-            )
+
+class Players:
+    """Every player's boxes and smoothed court positions over time (overlay.json).
+
+    A player's team is the side of the net they stand on, or, in a view made
+    by ``during``, the side they played that stretch on.
+    """
+
+    def __init__(self, overlay: dict | None = None, tracks: dict[str, Track] | None = None,
+                 teams: dict[str, str] | None = None):
+        self.tracks: dict[str, Track] = tracks if tracks is not None else {}
+        if tracks is None:
+            for pid, p in (overlay or {}).get("players", {}).items():
+                self.tracks[pid] = (
+                    np.asarray(p["t"], dtype=np.float64),
+                    np.asarray(p["box"], dtype=np.float64).reshape(-1, 4),
+                    np.asarray(p["xy"], dtype=np.float64).reshape(-1, 2),
+                )
+        self.teams = teams or {}
+
+    def during(self, start: float, end: float, min_share: float = 0.3) -> Players:
+        """The players seen between ``start`` and ``end``, each on the side they spent most of it on.
+
+        Someone seen for less than ``min_share`` as long as the most seen
+        player (walking past, a glimpse) is left out.
+        """
+        counts, teams = {}, {}
+        for pid, (t, _, xy) in self.tracks.items():
+            i, j = np.searchsorted(t, start), np.searchsorted(t, end, "right")
+            if j > i:
+                counts[pid] = j - i
+                teams[pid] = "A" if np.mean(xy[i:j, 1] < court.NET_Y) >= 0.5 else "B"
+        most = max(counts.values(), default=0)
+        keep = {pid for pid, n in counts.items() if n >= min_share * most}
+        return Players(tracks={pid: self.tracks[pid] for pid in keep}, teams={pid: teams[pid] for pid in keep})
+
+    def sides(self) -> dict[str, list[str]]:
+        """Who is on each team ("A", "B") in a view made by ``during``."""
+        out: dict[str, list[str]] = {"A": [], "B": []}
+        for pid, team in self.teams.items():
+            out[team].append(pid)
+        return {team: sorted(pids, key=lambda pid: (len(pid), pid)) for team, pids in out.items()}
 
     def at(self, t: float, max_gap_s: float = 0.25) -> list[Seen]:
         out = []
-        for pid, (team, times, boxes, xy) in self.tracks.items():
+        for pid, (times, boxes, xy) in self.tracks.items():
             i = int(np.searchsorted(times, t))
             near = [j for j in (i - 1, i) if 0 <= j < len(times)]
             if not near:
                 continue
             j = min(near, key=lambda j: abs(times[j] - t))
             if abs(times[j] - t) <= max_gap_s:
+                team = self.teams.get(pid) or court.team_at(float(xy[j][1]))
                 out.append(Seen(pid, team, boxes[j], xy[j]))
         return out
 
@@ -164,13 +200,14 @@ def find_shots(
     starts = [r.start_s for r in rallies]
     for k, rally in enumerate(rallies):
         times = hits[(hits >= rally.start_s - 0.3) & (hits <= rally.end_s + 0.3)]
-        mine = _hitters(times, players, ball, cfg)
-        _fill_turns(mine, players, ball)
+        here = players.during(rally.start_s, rally.end_s)
+        mine = _hitters(times, here, ball, cfg)
+        _fill_turns(mine, here, ball)
         made = [
-            _shot(i, h, mine, rally, players, ball, cfg) for i, h in enumerate(mine)
+            _shot(i, h, mine, rally, here, ball, cfg) for i, h in enumerate(mine)
         ]
         until = starts[k + 1] if k + 1 < len(starts) else rally.end_s + 3.0
-        point = _ending(rally, made, players, ball, net, until)
+        point = _ending(rally, made, here, ball, net, until)
         _outcomes(made, point)
         shots += made
         points.append(point)
@@ -293,7 +330,7 @@ def _is_lob(t: float, next_t: float, side: str, ball: Ball, cfg: ShotsConfig) ->
 def _ending(
     rally: Rally, shots: list[ShotInfo], players: Players, ball: Ball | None, net: NetBand | None, until: float
 ) -> PointInfo:
-    point = dict(rally=rally.index, start_s=rally.start_s, end_s=rally.end_s, shots=len(shots))
+    point = dict(rally=rally.index, start_s=rally.start_s, end_s=rally.end_s, shots=len(shots), teams=players.sides())
     last = shots[-1] if shots else None
     unknown = PointInfo(
         **point, last_player=last.player if last else None, last_team=last.team if last else None,

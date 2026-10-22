@@ -71,7 +71,7 @@ def track(
         help="detections.npz from an earlier run of this video: track again from it, without the detector.",
     ),
 ) -> None:
-    """Find and follow the four players; write tracks, stats, heatmaps and the viewer overlay."""
+    """Find and follow the players (any number, who is who decided after); write tracks, stats, heatmaps and the overlay."""
     from .pipeline import run_tracking
 
     cfg = _load_config(config)

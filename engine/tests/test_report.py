@@ -33,8 +33,9 @@ def test_teams_and_players_add_up():
     report = build_report(summary(), mf.overlay(), mf.clips(), config())
     assert (report.points, report.points_with_ending, report.shots) == (3, 2, 14)
     a, b = report.teams
-    assert (a.points_won, a.winners, a.errors) == (0, 0, 1)
-    assert (b.points_won, b.winners, b.errors) == (2, 1, 0)
+    assert (a.team, a.players, a.opponents, b.team) == ("P1+P2", ["P1", "P2"], ["P3", "P4"], "P3+P4")
+    assert (a.points, a.points_won, a.winners, a.errors) == (3, 0, 0, 1)
+    assert (b.points, b.points_won, b.winners, b.errors) == (3, 2, 1, 0)
     # One deep, one at the net on both sides, the whole time.
     assert a.formation["split"] == 1.0 and b.formation["split"] == 1.0
 
@@ -43,6 +44,34 @@ def test_teams_and_players_add_up():
     assert players["P2"].errors_by_kind == {"volley": 1}
     assert players["P1"].shot_kinds == {"serve": 3, "lob": 1, "groundstroke": 1}
     assert players["P2"].zone_share["net"] == 1.0
+    assert (players["P1"].points, players["P1"].points_won, players["P1"].partners) == (3, 0, {"P2": 3})
+
+
+def test_pairs_are_whoever_played_points_together():
+    """People rotate in and swap partners: each pair's numbers come from the points they played together."""
+    from padel_engine.report import pairs, team_of
+    from padel_engine.schemas import PointInfo
+
+    def point(rally, a, b, won_by):
+        return PointInfo(rally=rally, start_s=10.0 * rally, end_s=10.0 * rally + 5, shots=4, last_player=None,
+                         last_team=None, ending="winner", detail=None, won_by=won_by, teams={"A": a, "B": b})
+
+    points = [
+        point(0, ["P1", "P2"], ["P3", "P4"], "A"),
+        point(1, ["P3", "P4"], ["P1", "P2"], "A"),  # they changed ends
+        point(2, ["P1", "P3"], ["P2", "P5"], "B"),  # P5 rotated in, partners swapped
+        point(3, ["P1"], ["P2", "P5"], "B"),  # P3 missed: no pair on that side
+    ]
+    found = pairs(points)
+    assert {k: [(p.rally, t) for p, t in v] for k, v in found.items()} == {
+        "P1+P2": [(0, "A"), (1, "B")], "P3+P4": [(0, "B"), (1, "A")], "P1+P3": [(2, "A")], "P2+P5": [(2, "B"), (3, "B")],
+    }
+    assert [team_of("P5", p) for p in points] == [None, None, "B", "B"]
+    report = build_report(ShotsSummary(engine_version="test", shots=[], points=points, outputs={}), mf.overlay(),
+                          mf.clips(), config(min_pair_points=2))
+    assert [(t.team, t.points, t.points_won) for t in report.teams] == [("P1+P2", 2, 1), ("P3+P4", 2, 1), ("P2+P5", 2, 2)]
+    players = {p.player: p for p in report.players}
+    assert (players["P1"].points, players["P1"].points_won, players["P1"].partners) == (4, 1, {"P2": 2, "P3": 1})
 
 
 def test_movement_counts_only_time_in_points():
@@ -54,7 +83,7 @@ def test_movement_counts_only_time_in_points():
 def test_tips_follow_the_numbers():
     report = build_report(summary(), mf.overlay(), mf.clips(), config())
     topics = {(t.who, t.topic) for t in report.tips}
-    assert {("A", "formation"), ("B", "formation"), ("P1", "net"), ("P3", "net")} <= topics
+    assert {("P1+P2", "formation"), ("P3+P4", "formation"), ("P1", "net"), ("P3", "net")} <= topics
     assert ("P2", "net") not in topics
     # Too few points for tips by default.
     assert build_report(summary(), mf.overlay(), mf.clips(), EngineConfig()).tips == []

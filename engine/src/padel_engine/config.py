@@ -99,39 +99,60 @@ class TrackingConfig(BaseModel):
         "someone else (the tracker often hands a hidden player's id to whoever is in front).",
     )
     appearance_momentum: float = Field(0.05, gt=0, le=1)
-    repair_identities: bool = Field(
-        True,
-        description="After tracking, re-check who is who by shirt colour and fix numbers the live pass mixed "
-        "up, so a player who vanishes gets their own number back when they return.",
-    )
     segment_gap_s: float = Field(
         0.5,
         gt=0,
-        description="The repair splits a player's track wherever they were unseen this long (or jumped "
-        "faster than max speed) and decides afresh who each piece is.",
-    )
-    prototype_min_s: float = Field(
-        3.0, gt=0, description="Only pieces with this much clear view build a player's reference colours."
-    )
-    repair_min_clear_s: float = Field(
-        0.3, ge=0, description="A piece needs this much clear view for its colours to count in the repair."
-    )
-    repair_switch_cost: float = Field(
-        0.1,
-        ge=0,
-        description="How much closer (colour distance) a piece must be to another player's colours before "
-        "the repair changes its number; keeps teammates in the same kit from being shuffled.",
+        description="A track is cut wherever its person was unseen this long (or jumped faster than max "
+        "speed), and who each piece is gets decided after the match.",
     )
     contact_m: float = Field(
         1.0,
         ge=0,
-        description="Players closer than this (court metres) may be swapped by the tracker, so their tracks "
-        "are cut where they part. A tag then fixes a name from that moment on; 0 never cuts.",
+        description="People closer than this (court metres) may be swapped by the tracker, so their tracks "
+        "are cut where they part; 0 never cuts.",
     )
-    repair_at_contacts: bool = Field(
-        False,
-        description="Also let the colour repair re-decide who is who after every close pass, not only after "
-        "a gap. Off: a track cut where two players parted stays one person unless a tag says otherwise.",
+    # Who is who after the match (identity.py)
+    same_person_max_distance: float = Field(
+        0.3,
+        ge=0,
+        le=1,
+        description="Pieces of track whose colours (shirt, shorts, legs; 0 same, 1 nothing alike) differ "
+        "less than this are one person. Lower tells apart people in similar kit but may split one person "
+        "in two.",
+    )
+    colour_noise: float = Field(
+        0.15,
+        ge=0,
+        description="Added to the colour difference of pieces seen clearly for only a moment, less the "
+        "longer they were seen: a glimpse must look more alike to count as the same person.",
+    )
+    contact_link_bonus: float = Field(
+        0.1,
+        ge=0,
+        description="How much more alike two pieces count when one continues the other after two people "
+        "passed close (the tracker usually keeps them right).",
+    )
+    continuity_bonus: float = Field(
+        0.15,
+        ge=0,
+        description="How much more alike a piece counts with one that ended just before it, a few steps "
+        "away: most likely the same person found again.",
+    )
+    continuity_gap_s: float = Field(3.0, gt=0, description="Pieces further apart in time get no continuity bonus.")
+    continuity_speed_mps: float = Field(
+        4.0, gt=0, description="How far someone plausibly walks per second unseen, for the continuity bonus."
+    )
+    attach_max_distance: float = Field(
+        0.45,
+        ge=0,
+        le=1,
+        description="Short pieces that matched nobody join the player they look most like, if within this.",
+    )
+    min_player_s: float = Field(
+        30.0,
+        ge=0,
+        description="Someone inside the lines for less than this in all is not a player (someone fetching a "
+        "ball, a spectator by the door), unless a tag names them.",
     )
 
 
@@ -277,10 +298,13 @@ class ShotsConfig(BaseModel):
 class ReportConfig(BaseModel):
     enabled: bool = True
     min_points: int = Field(5, ge=1, description="Fewer points than this and the report gives numbers but no tips.")
+    min_pair_points: int = Field(
+        3, ge=1, description="A pair needs this many points together to get its own numbers in the report."
+    )
     ai_summary: bool = Field(
         True,
         description="Ask Claude for a written coaching summary when ANTHROPIC_API_KEY is set. Only the report's "
-        "numbers are sent (players are P1-P4), never video or names.",
+        "numbers are sent (players are P1, P2, ...), never video or names.",
     )
     ai_model: str = "claude-opus-5-5"
     player_reels: bool = Field(True, description="Cut a highlight reel of each player's best moments.")

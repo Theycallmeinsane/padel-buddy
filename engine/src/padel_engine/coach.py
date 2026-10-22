@@ -2,7 +2,7 @@
 
 Only runs when ANTHROPIC_API_KEY is set (keep it in the git-ignored .env)
 and the ``anthropic`` package is installed (``pip install -e ".[coach]"``).
-Only the report's numbers are sent: players are P1-P4, with no names, video
+Only the report's numbers are sent: players are P1, P2, ..., with no names, video
 or images. Any failure leaves the summary out; the report never depends on it.
 """
 
@@ -16,13 +16,16 @@ from .schemas import MatchReport
 
 log = logging.getLogger(__name__)
 
-SYSTEM = """You are a padel coach writing a short summary of one match for the four amateur players in it.
-You get the match's numbers as JSON: points, shots by kind, winners and errors, each player's success rate
-per kind of shot (kept in play or won outright, rated strong, solid or weak once there are enough), time at
-the net, team formation (both at the net, split, both back), movement during points, and rule-based tips.
+SYSTEM = """You are a padel coach writing a short summary of one session for the amateur players in it.
+People may rotate in and swap partners: each pair ("P1+P3") is two players who played points together.
+You get the numbers as JSON: points, shots by kind, winners and errors, each player's points, partners and
+success rate per kind of shot (kept in play or won outright, rated strong, solid or weak once there are
+enough), time at the net, each pair's formation (both at the net, split, both back), movement during
+points, and rule-based tips.
 
-Write 120 to 200 words of plain prose, no headings or bullet points. Start with how the match went, then
-give each team one or two concrete things to work on, grounded in the numbers. Call players P1 to P4.
+Write 120 to 200 words of plain prose, no headings or bullet points. Start with how the session went, then
+give each player or pair one or two concrete things to work on, grounded in the numbers. Call players by
+their numbers (P1, P2, ...).
 Winners, errors and shot kinds are estimates from video; don't build big conclusions on small counts.
 """
 
