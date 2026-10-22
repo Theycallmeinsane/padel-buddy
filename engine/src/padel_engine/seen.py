@@ -21,9 +21,9 @@ import numpy as np
 
 from . import files
 from .detection import Detection
-from .players import HIST_BINS
+from .players import APPEARANCE_SHAPE
 
-VERSION = 1
+VERSION = 2  # 2: colours of three body parts
 Seen = tuple[int, float, list[Detection], list[np.ndarray | None]]  # frame index, time, people, their colours
 
 
@@ -45,7 +45,7 @@ class DetectionLog:
         self.frames.append(frame)
         self.times.append(t)
         self.counts.append(len(detections))
-        blank = np.zeros(HIST_BINS, np.float32)
+        blank = np.zeros(APPEARANCE_SHAPE, np.float32)
         for d, c in zip(detections, colours):
             self.boxes.append(d.bbox)
             self.confidence.append(d.confidence)
@@ -67,7 +67,7 @@ class DetectionLog:
             boxes=np.asarray(self.boxes, np.float64).reshape(n, 4),
             confidence=np.asarray(self.confidence, np.float64),
             track_ids=np.asarray(self.track_ids, np.int64),
-            colours=np.asarray(self.colours, np.float32).reshape(n, *HIST_BINS),
+            colours=np.asarray(self.colours, np.float32).reshape(n, *APPEARANCE_SHAPE),
             has_colour=np.asarray(self.has_colour, bool),
         )
         files.write_bytes(path, buf.getvalue())

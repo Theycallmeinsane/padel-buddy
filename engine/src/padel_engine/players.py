@@ -50,14 +50,28 @@ TEAM_OF = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
 _START_SIDE = {"P1": "near", "P2": "near", "P3": "far", "P4": "far"}
 
 _INFEASIBLE = 1e6
-HIST_BINS = (18, 4)  # hue, saturation
+# Appearance: colour histograms of three parts of the body. A shirt alone
+# cannot tell apart players in the same dark kit; shorts, socks and shoes
+# often can. Each part counts coloured pixels by hue (18 bins) and strength
+# (2), and black, grey and white ones by brightness (4).
+PARTS = (  # (top, bottom, left, right) as shares of the box
+    (0.15, 0.50, 0.25, 0.75),  # shirt
+    (0.50, 0.68, 0.30, 0.70),  # shorts
+    (0.70, 0.98, 0.20, 0.80),  # legs, socks and shoes
+)
+PART_WEIGHTS = (0.5, 0.25, 0.25)
+_HUES, _GREYS = 18, 4
+APPEARANCE_SHAPE = (len(PARTS), _HUES * 2 + _GREYS)
+_COLOURED_S, _STRONG_S, _DARK_V = 64, 150, 50  # OpenCV HSV, 0-255
+_GREY_EDGES = np.array([_DARK_V, 110, 180])  # black | dark grey | light grey | white
+_MIN_PART_PIXELS = 9
 
 
 @dataclass
 class Candidate:
     detection: Detection
     court_xy: np.ndarray  # (2,) metres
-    appearance: np.ndarray | None  # normalised colour histogram
+    appearance: np.ndarray | None  # colour histograms per body part (appearance_of)
 
 
 @dataclass
@@ -90,7 +104,7 @@ class Segment:
     last: int = -1
     frames: int = 0
     clear: int = 0  # frames whose colours were seen clearly
-    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(HIST_BINS))
+    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(APPEARANCE_SHAPE))
     after: int | None = None  # the segment it continues, when cut only because two players parted
 
     def add(self, frame: int, appearance: np.ndarray | None) -> None:
@@ -556,46 +570,78 @@ def unobstructed(boxes: list, max_covered: float = 0.2) -> list[bool]:
 
 
 def appearance_of(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray | None:
-    """Hue/saturation histogram of the torso (shirt colour is the best cue)."""
+    """Colour histograms of the shirt, shorts and legs (see ``PARTS``); None when the box shows none of them.
+
+    A part cut off by the frame edge, or too small to see, is all zeros and
+    left out of comparisons.
+    """
     x1, y1, x2, y2 = bbox
     w, h = x2 - x1, y2 - y1
-    tx1, tx2 = int(x1 + 0.25 * w), int(x1 + 0.75 * w)
-    ty1, ty2 = int(y1 + 0.15 * h), int(y1 + 0.50 * h)
     H, W = frame.shape[:2]
-    tx1, tx2 = max(tx1, 0), min(tx2, W)
-    ty1, ty2 = max(ty1, 0), min(ty2, H)
-    if tx2 - tx1 < 3 or ty2 - ty1 < 3:
+    bx1, by1, bx2, by2 = max(int(x1), 0), max(int(y1), 0), min(int(np.ceil(x2)), W), min(int(np.ceil(y2)), H)
+    if bx2 - bx1 < 3 or by2 - by1 < 3:
         return None
-    hsv = cv2.cvtColor(frame[ty1:ty2, tx1:tx2], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, list(HIST_BINS), [0, 180, 0, 256])
-    total = hist.sum()
-    return (hist / total).astype(np.float32) if total > 0 else None
+    hsv = cv2.cvtColor(frame[by1:by2, bx1:bx2], cv2.COLOR_BGR2HSV)
+    out = np.zeros(APPEARANCE_SHAPE, np.float32)
+    for k, (top, bottom, left, right) in enumerate(PARTS):
+        px1, px2 = max(int(x1 + left * w), 0) - bx1, min(int(x1 + right * w), W) - bx1
+        py1, py2 = max(int(y1 + top * h), 0) - by1, min(int(y1 + bottom * h), H) - by1
+        if px2 - px1 < 3 or py2 - py1 < 3:
+            continue
+        part = hsv[py1:py2, px1:px2].reshape(-1, 3).astype(np.int32)
+        hue, sat, val = part[:, 0], part[:, 1], part[:, 2]
+        coloured = (sat >= _COLOURED_S) & (val >= _DARK_V)
+        bins = np.where(
+            coloured,
+            np.minimum(hue * _HUES // 180, _HUES - 1) * 2 + (sat >= _STRONG_S),
+            2 * _HUES + np.searchsorted(_GREY_EDGES, val, side="right"),
+        )
+        if len(bins) >= _MIN_PART_PIXELS:
+            out[k] = np.bincount(bins, minlength=APPEARANCE_SHAPE[1]) / len(bins)
+    return out if out.any() else None
 
 
 def appearance_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
-    """0 for identical colour distributions, 1 for disjoint; 0.5 when unknown."""
+    """0 for identical colours, 1 for nothing alike; 0.5 when unknown.
+
+    The weighted mean, over the body parts both show, of each part's
+    Bhattacharyya distance.
+    """
     if a is None or b is None:
         return 0.5
-    return float(cv2.compareHist(a.astype(np.float32), b.astype(np.float32), cv2.HISTCMP_BHATTACHARYYA))
+    total = weight = 0.0
+    for k, part_weight in enumerate(PART_WEIGHTS):
+        pa, pb = a[k], b[k]
+        if pa.any() and pb.any():
+            total += part_weight * cv2.compareHist(
+                pa.astype(np.float32), pb.astype(np.float32), cv2.HISTCMP_BHATTACHARYYA
+            )
+            weight += part_weight
+    return float(total / weight) if weight else 0.5
+
+
+SEGMENTS_VERSION = 2  # 2: colours of three body parts
 
 
 def save_segments(path: str | Path, segments: list[Segment]) -> None:
     """Every segment with its colours, so who is who can be decided again (after a tag) without re-tracking."""
     rows = []
     for s in segments:
-        colour = s.colour if s.clear else np.zeros(HIST_BINS)
+        colour = s.colour if s.clear else np.zeros(APPEARANCE_SHAPE)
         rows.append({
             "player": s.player_id, "first": s.first, "last": s.last, "frames": s.frames, "clear": s.clear,
             "after": s.after, "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
         })
-    Path(path).write_text(json.dumps({"version": 1, "segments": rows}, separators=(",", ":")))
+    Path(path).write_text(json.dumps({"version": SEGMENTS_VERSION, "segments": rows}, separators=(",", ":")))
 
 
 def load_segments(path: str | Path) -> list[Segment]:
     data = json.loads(Path(path).read_text())
+    if data.get("version") != SEGMENTS_VERSION:
+        raise ValueError(f"{path} was written by an older version; analyse the match again to name players")
     segments = []
     for r in data["segments"]:
         s = Segment(r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"])
-        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(HIST_BINS) * s.clear
+        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(APPEARANCE_SHAPE) * s.clear
         segments.append(s)
     return segments

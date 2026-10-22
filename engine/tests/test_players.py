@@ -8,6 +8,7 @@ from padel_engine.calibration import Calibration
 from padel_engine.config import TrackingConfig
 from padel_engine.detection import Detection
 from padel_engine.players import (
+    APPEARANCE_SHAPE,
     Candidate,
     PlayerAssigner,
     Segment,
@@ -30,8 +31,9 @@ def cand(x, y, appearance=None, track_id=None):
 
 
 def colour(hue_bin):
-    hist = np.zeros((18, 4), np.float32)
-    hist[hue_bin, 3] = 1
+    """Shirt, shorts and legs all one strong hue."""
+    hist = np.zeros(APPEARANCE_SHAPE, np.float32)
+    hist[:, 2 * hue_bin + 1] = 1
     return hist
 
 
