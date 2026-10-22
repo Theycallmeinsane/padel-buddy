@@ -64,6 +64,15 @@ class TrackingConfig(BaseModel):
         description="A track is cut where its person is this far past the net on the other side (they walked "
         "round it, at a changeover), so each piece of track stays on one side, where colours compare.",
     )
+    net_round_across_m: float = Field(
+        1.5,
+        ge=0,
+        description="Nobody gets to the other half except round a net post, so a track is only cut at the net "
+        "where its person is this close to a side line (or past it), within net_round_along_m of the net. "
+        "Anywhere else it is a far player at the net: it hides their feet, so they are placed up to a metre "
+        "in front of it.",
+    )
+    net_round_along_m: float = Field(2.0, ge=0, description="See net_round_across_m.")
     outside_release_s: float = Field(
         4.0, gt=0, description="A player followed outside the lines this long is let go and found again by appearance."
     )

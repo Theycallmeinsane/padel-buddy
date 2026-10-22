@@ -229,16 +229,31 @@ def test_people_in_the_doorways_by_the_net_posts_are_not_players():
 
 
 def test_a_track_is_cut_where_its_person_walks_round_the_net():
-    """At a changeover P1 walks from the near half to the far one; the tracker keeps them."""
+    """At a changeover P1 walks from the near half round the left net post to the far one; the tracker keeps them."""
     red, blue = colour(0), colour(12)
     a = PlayerAssigner(TrackingConfig())
     for t in times(0, 6):
         y = 6.0 + max(0.0, t - 1.0) * 1.6  # 6 m to 14 m from the near wall
-        a.assign(t, [cand(1.5, y, red, 1), cand(8.0, 16.0, blue, 2)])
+        x = 2.0 - 1.8 * max(0.0, 1.0 - abs(y - court.NET_Y) / 2.5)  # out to the post (0.2 m in) and back
+        a.assign(t, [cand(x, y, red, 1), cand(8.0, 16.0, blue, 2)])
     p1 = [s for s in a.segments if s.player_id == "P1"]
     assert [(s.side, s.crossed) for s in p1] == [("near", False), ("far", True)]
     assert p1[1].after == a.segments.index(p1[0]) and p1[1].start_xy[1] > court.NET_Y + 0.5
     assert who(a) == ["P1", "P2", "P1"]  # pieces grouped as one person again
+
+
+def test_a_far_player_at_the_net_placed_in_front_of_it_stays_on_their_side():
+    """The net hides a far player's feet as they come up to it, so they are placed up to a metre in front of it.
+
+    Nobody gets past the net away from its posts: their track is not cut, and counts as the far side.
+    """
+    red, blue = colour(0), colour(12)
+    a = PlayerAssigner(TrackingConfig())
+    for t in times(0, 9):
+        y = 9.2 + 3.8 * abs(np.sin(t * np.pi / 6))  # first seen in front of the net, back to 13 m, up to it again
+        out = a.assign(t, [cand(2.0, 3.0, blue, 1), cand(6.0, y, red, 2)])
+        assert out == {"P1": 0, "P2": 1}
+    assert [(s.side, s.crossed) for s in a.segments if s.player_id == "P2"] == [("far", False)]
 
 
 def test_two_boxes_on_one_player_are_one_candidate():

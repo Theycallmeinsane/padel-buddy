@@ -24,9 +24,10 @@ different unless the tracker says it is still the same person.
 Each slot's track is cut into pieces (``Segment``) wherever it broke (a gap,
 an impossible jump, a release), where two people part after passing close
 (the moment the tracker may have swapped them) and where someone walks round
-the net to the other side, so each piece is seen from one side only. Each
-piece keeps its colours, times and places, for identity.py to group into
-people.
+a net post to the other side, so each piece is seen from one side only. Only
+round a post: elsewhere someone past the net is a far player up at it, whose
+feet it hides, placed in front of it. Each piece keeps its colours, times and
+places, for identity.py to group into people.
 """
 
 from __future__ import annotations
@@ -104,7 +105,8 @@ class Segment:
     colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(APPEARANCE_SHAPE))
     after: int | None = None  # the segment it continues, when cut only because two players parted or one crossed
     crossed: bool = False  # cut because its person walked round the net alone: ``after`` is them, on the other side
-    side: str = ""  # "near" or "far", where it starts; a piece that crosses the net is cut there
+    side: str = ""  # "near" or "far", where most of it is; a piece that goes round the net is cut there
+    near: int = 0  # frames on the near side
     inside: int = 0  # frames inside the lines
     start_t: float = 0.0  # seconds, and court metres, where it starts and ends
     end_t: float = 0.0
@@ -116,9 +118,11 @@ class Segment:
     ) -> None:
         xy = (round(float(xy[0]), 3), round(float(xy[1]), 3))
         if not self.frames:
-            self.start_t, self.start_xy, self.side = t, xy, court.side_of(xy[1])
+            self.start_t, self.start_xy = t, xy
         self.last, self.end_t, self.end_xy = frame, t, xy
         self.frames += 1
+        self.near += xy[1] < court.NET_Y
+        self.side = "near" if 2 * self.near >= self.frames else "far"
         self.inside += inside
         if appearance is not None:
             self.colour_sum += appearance
@@ -200,10 +204,21 @@ class PlayerAssigner:
             return False
         return not court.by_net_post(float(xy[0]), float(xy[1]), cfg.net_post_across_m, cfg.net_post_along_m)
 
-    def _crossed(self, segment: Segment, xy: np.ndarray) -> bool:
-        """Whether someone whose piece started on one side is now well past the net on the other."""
+    def _crossed(self, segment: Segment, xy: np.ndarray, before: np.ndarray) -> bool:
+        """Whether someone whose piece is on one side went round a net post to well past the net on the other.
+
+        Round a post, now or at the last update: nobody gets past the net
+        anywhere else, so elsewhere it is a far player up at the net, placed
+        in front of it because it hides their feet.
+        """
+        cfg = self.cfg
         past = (xy[1] - court.NET_Y) * (1 if segment.side == "near" else -1)
-        return bool(segment.side) and past > self.cfg.net_cross_m
+        if not segment.side or past <= cfg.net_cross_m:
+            return False
+        return any(
+            court.by_net_post(float(p[0]), float(p[1]), cfg.net_round_across_m, cfg.net_round_along_m)
+            for p in (xy, before)
+        )
 
     def _appearance_limit(self, slot: _Slot, time_s: float, same_track: bool) -> float:
         """Largest colour distance a player accepts.
@@ -291,7 +306,7 @@ class PlayerAssigner:
             # After a gap or a jump this may be someone else; identity.py decides.
             slot.segment = len(self.segments)
             self.segments.append(Segment(slot.player_id, self.frames))
-        elif self._crossed(self.segments[slot.segment], cand.court_xy):
+        elif self._crossed(self.segments[slot.segment], cand.court_xy, slot.xy):
             # Round the net to the other side (a changeover). Still them, but
             # their colours look different from there, so a new piece, linked:
             # sure to be them, unless someone was close enough to be swapped in.

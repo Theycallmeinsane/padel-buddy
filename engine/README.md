@@ -137,7 +137,10 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    into pieces wherever its person vanished for more than half a second or
    jumped, where two people part after passing within a metre of each
    other, since that is where a swap would happen, and where someone walks
-   round the net to the other side, so each piece is seen from one side.
+   round a net post to the other side, so each piece is seen from one side.
+   Only round a post (`tracking.net_round_across_m`): the net hides a far
+   player's feet as they come up to it, so they are often placed up to a
+   metre in front of it, and that is not a crossing.
 
    **Who is who** is decided once the whole match is tracked
    (`identity.py`), for any number of people. Pieces seen at the same moment
