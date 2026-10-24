@@ -86,6 +86,7 @@ Each run folder contains:
 | `players/P1.mp4` … | Each player's own highlight reel (their winners, overheads and long points they won), at 720p |
 | `players/P1_winners.mp4` … | Every point the player finished with a winner, joined, at 720p |
 | `shorts/point_012.mp4`, `shorts/P1_winner.mp4` … | Vertical 9:16 shorts for phones: the 5 best points, and each player's best winner |
+| `live.json` | With a calibration: how far the results published so far reach (`covered_s` of `duration_s`), and `done` once the run finished |
 
 Players are numbered by where they stand when first seen: **P1** near-left
 and **P2** near-right (team A, camera side at the start), **P3** far-left
@@ -227,6 +228,25 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    as P1-P4) are sent to Claude (`report.ai_model`, Claude Opus 5.5 by
    default) for a short written summary. Without a key this step is skipped.
 
+18. **Live results** (with a calibration; `live.enabled`, on by default).
+   Instead of everything at the end, results are published as the match is
+   analysed. The sound is analysed first, so every point is listed within a
+   minute or two. Tracking then publishes the stats, heatmaps and overlay so
+   far after every 5 minutes of video (`live.every_s`), with who is who as
+   it stands, tags included. Each time, the ball is tracked in the points
+   tracking has passed, in a background thread while the GPU tracks on, and
+   shots, point endings and the report's numbers follow for every point
+   whose ball is done. Every point's own clip is cut in the background from
+   the start; the condensed match at the end joins them. The best clips,
+   highlight reel, player reels, shorts and the coach's summary come at the
+   end, when every point can be ranked and the repair has seen the whole
+   match, so numbers and even player numbers can still change then. The
+   finished outputs are exactly those of a run without live results.
+   Smoothing keeps the stretches of track that have not changed, so each
+   publish costs a few seconds. Every output is written beside its name and
+   moved over it in one step, so the app can read results at any moment,
+   and if a run fails, what it published stays.
+
 Settings live in `padel_engine/config.py` (the `audio`, `clips`, `ball`,
 `shots` and `report` sections cover all of the above); pass a JSON file of
 overrides with `--config`.
@@ -250,6 +270,7 @@ next. These settings are on by default and change no results:
 | `tracking.prefetch_frames` | 16 | Frames decoded and shrunk ahead in a background thread while the GPU works |
 | `ball.workers` | 0 (auto) | Points tracked at the same time; auto is a quarter of the CPU threads, at most 4 |
 | `clips.video_encoder` | auto | NVENC (`h264_nvenc`) when the GPU and FFmpeg support it, else x264 |
+| `live.enabled` | true | Point clips and the ball are worked on while the GPU tracks, instead of after it |
 
 These trade accuracy for more speed, so test them on your own footage first:
 `tracking.process_fps` (10), `detector.image_size` (1280; 960 is about 1.5

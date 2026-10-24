@@ -27,7 +27,11 @@ export type Match = {
   player_names?: Record<string, string>; // P1..P4 -> name
   tags?: Tag[];
   job: Job | null;
+  live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
 };
+
+/** Results published during an analysis cover the video up to `covered_s`. */
+export type Live = { covered_s: number; duration_s: number };
 
 /** Someone named the person at (x, y) (source video pixels) at match time `time_s`. */
 export type Tag = {
@@ -61,6 +65,7 @@ export type TrackingSummary = {
   players: PlayerStats[];
   analysed_fps: number;
   outputs: Record<string, string>;
+  names?: Record<string, string>; // P1..P4 -> name, from tags
 };
 
 export type Clip = {
@@ -369,11 +374,14 @@ export class Api {
     this.request<Job>(`/matches/${id}/analyze`, { method: "POST", body: JSON.stringify({ config: config ?? null }) });
   results = (id: string) => this.request<Results>(`/matches/${id}/results`);
   frameUrl = (id: string, t: number) => this.media(`/matches/${id}/frame?t=${t}`);
-  fileUrl = (id: string, rel: string) => this.media(`/matches/${id}/files/${rel}`);
+  // `version` changes when an output is rewritten under the same name (live results), so the browser fetches it again.
+  fileUrl = (id: string, rel: string, version?: string) =>
+    this.media(`/matches/${id}/files/${rel}${version ? `?v=${encodeURIComponent(version)}` : ""}`);
   videoUrl = (id: string) => this.media(`/matches/${id}/video`);
-  // Tags can rewrite the overlay in place, so always check it is current.
+  // Tags and live results rewrite these in place, so always check they are current.
   overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`, { cache: "no-cache" });
-  ballTrack = (id: string, rel: string) => this.request<BallTrack>(`/matches/${id}/files/${rel}`);
+  ballTrack = (id: string, rel: string) =>
+    this.request<BallTrack>(`/matches/${id}/files/${rel}`, { cache: "no-cache" });
   namePlayers = (id: string, names: Record<string, string>) =>
     this.request<Match>(`/matches/${id}/players`, { method: "PUT", body: JSON.stringify({ names }) });
   addTag = (id: string, tag: TagIn) =>

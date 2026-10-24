@@ -44,6 +44,16 @@ export function playerAt(overlay: Overlay, t: number, x: number, y: number, maxG
   return best;
 }
 
+/**
+ * Names to show while a match is analysed: what the tags say so far (`tagged`,
+ * from the engine) wins, and a saved name a tag has given to someone else is dropped.
+ */
+export function liveNames(saved: Record<string, string>, tagged: Record<string, string>): Record<string, string> {
+  const given = new Set(Object.values(tagged).map((n) => n.toLowerCase()));
+  const kept = Object.entries(saved).filter(([, n]) => !given.has(n.toLowerCase()));
+  return { ...Object.fromEntries(kept), ...tagged };
+}
+
 /** Names to suggest: this match's first, then everyone named before, each once. */
 export function suggestions(names: Record<string, string>, people: string[]): string[] {
   const seen = new Set<string>();

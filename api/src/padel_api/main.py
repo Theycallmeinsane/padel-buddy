@@ -7,8 +7,8 @@ Flow for one match:
     GET  /matches/{id}/frame?t=5          a still frame to click the court on
     PUT  /matches/{id}/calibration        the clicked points (optional: enables tracking)
     POST /matches/{id}/analyze            queue the engine
-    GET  /matches/{id}                    status and progress
-    GET  /matches/{id}/results            tracking, clips, ball, shots and report
+    GET  /matches/{id}                    status and progress, and how far live results reach
+    GET  /matches/{id}/results            tracking, clips, ball, shots and report (so far, while analysing)
     GET  /matches/{id}/files/{path}       any output: clips, reel, heatmaps, overlay data
     PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
     POST /matches/{id}/tags               name the person at a spot at a moment (fixes mix-ups too)
@@ -42,8 +42,8 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, MatchCreate, MatchOut, PersonOut, PlayerNamesIn,
-    PlayerOut, TagIn, TagOut, UploadStatus,
+    AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, LiveOut, MatchCreate, MatchOut, PersonOut,
+    PlayerNamesIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
@@ -98,6 +98,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return [Keypoint(name=n, x_m=x, y_m=y) for n, (x, y) in court.KEYPOINTS.items()]
 
+    def match_out(match: Match) -> MatchOut:
+        return _match_out(match, storage.run_dir(match.id))
+
     # -- matches ----------------------------------------------------------
 
     @app.post("/matches", status_code=201, dependencies=auth)
@@ -110,16 +113,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.add(match)
         session.commit()
         storage.match_dir(match.id).mkdir(parents=True, exist_ok=True)
-        return _match_out(match)
+        return match_out(match)
 
     @app.get("/matches", dependencies=auth)
     def list_matches(session: Session = Depends(get_session)) -> list[MatchOut]:
         rows = session.scalars(select(Match).order_by(Match.created_at.desc())).all()
-        return [_match_out(m) for m in rows]
+        return [match_out(m) for m in rows]
 
     @app.get("/matches/{match_id}", dependencies=auth)
     def get_match(match: Match = Depends(load_match)) -> MatchOut:
-        return _match_out(match)
+        return match_out(match)
 
     @app.delete("/matches/{match_id}", status_code=204, dependencies=auth)
     def delete_match(match: Match = Depends(load_match), session: Session = Depends(get_session)) -> Response:
@@ -271,7 +274,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ("shots", "shots.json"), ("report", "report.json"),
         ):
             f = run / name
-            out[key] = json.loads(f.read_text()) if f.exists() else None
+            out[key] = json.loads(f.read_bytes()) if f.exists() else None
         return out
 
     # -- players and people -------------------------------------------------
@@ -304,7 +307,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.commit()
         if forgot:
             queue_relabel(session, match)
-        return _match_out(match)
+        return match_out(match)
 
     @app.post("/matches/{match_id}/tags", status_code=201, dependencies=auth)
     def add_tag(body: TagIn, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
@@ -354,7 +357,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if mixed_up or not shown or jobs.active_job(session, match.id) is not None:
             # Who is who needs deciding again, or a running job started without this tag.
             queue_relabel(session, match)
-        return _match_out(match)
+        return match_out(match)
 
     @app.delete("/matches/{match_id}/tags/{tag_id}", dependencies=auth)
     def delete_tag(tag_id: str, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
@@ -367,7 +370,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.commit()
         if gone.get("applied"):
             queue_relabel(session, match)
-        return _match_out(match)
+        return match_out(match)
 
     def queue_relabel(session: Session, match: Match) -> None:
         """Decide who is who again from the tags, after whatever is already queued or running.
@@ -399,7 +402,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         f = storage.run_dir(match.id) / "report.json"
         if not f.exists():
             raise HTTPException(404, "No report yet: analyse the match with a calibration")
-        report = MatchReport.model_validate_json(f.read_text())
+        report = MatchReport.model_validate_json(f.read_bytes())
         return Response(to_markdown(report, match.player_names or {}), media_type="text/markdown; charset=utf-8")
 
     @app.get("/people", dependencies=auth)
@@ -525,7 +528,7 @@ def _job_out(job: Job) -> JobOut:
     )
 
 
-def _match_out(match: Match) -> MatchOut:
+def _match_out(match: Match, run: Path | None = None) -> MatchOut:
     latest = match.jobs[-1] if match.jobs else None
     return MatchOut(
         id=match.id, title=match.title, created_at=match.created_at, status=match.status,
@@ -533,12 +536,25 @@ def _match_out(match: Match) -> MatchOut:
         calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
         tags=[TagOut.model_validate(t) for t in match.tags or []],
         job=_job_out(latest) if latest else None,
+        live=_live(run) if run is not None and match.status != "done" else None,
     )
 
 
+def _live(run: Path) -> LiveOut | None:
+    """How far the results published during an analysis reach; None once it finished."""
+    f = run / "live.json"
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_bytes())
+    except (OSError, ValueError):
+        return None
+    return None if data.get("done") else LiveOut(covered_s=data["covered_s"], duration_s=data["duration_s"])
+
+
 def _player_out(match: Match, player: str, run: Path) -> PlayerOut:
-    report = json.loads((run / "report.json").read_text()) if (run / "report.json").exists() else None
-    shots = json.loads((run / "shots.json").read_text())["shots"] if (run / "shots.json").exists() else []
+    report = json.loads((run / "report.json").read_bytes()) if (run / "report.json").exists() else None
+    shots = json.loads((run / "shots.json").read_bytes())["shots"] if (run / "shots.json").exists() else []
     mine = next((p for p in (report or {}).get("players", []) if p["player"] == player), None)
     return PlayerOut(
         match_id=match.id,

@@ -44,6 +44,7 @@ export default function MatchViewer({
   onTag,
   onDeleteTag,
   updating = false,
+  live = false,
   version = "",
 }: {
   api: Api;
@@ -58,6 +59,7 @@ export default function MatchViewer({
   onTag?: SaveTag;
   onDeleteTag?: (id: string) => void;
   updating?: boolean; // who is who is being decided again after a tag
+  live?: boolean; // the results so far, while the match is analysed
   version?: string; // changes when the outputs were rewritten in place
 }) {
   const clips = data.clips;
@@ -113,7 +115,7 @@ export default function MatchViewer({
     return () => {
       live = false;
     };
-  }, [api, matchId, ballFile]);
+  }, [api, matchId, ballFile, version]);
 
   // Repaint every frame: it is cheap and follows playback, seeking and resizing alike.
   useEffect(() => {
@@ -299,11 +301,19 @@ export default function MatchViewer({
       {fullFailed && (
         <p className="muted small">
           This browser can&apos;t play the original video (iPhone recordings are often HEVC).{" "}
-          {condensed ? "Points only plays everywhere." : "Analyse again to get a condensed match that plays everywhere."}
+          {condensed
+            ? "Points only plays everywhere."
+            : live
+              ? "Points only plays everywhere once the analysis finishes; meanwhile each point's clip is under Every point as soon as it is cut."
+              : "Analyse again to get a condensed match that plays everywhere."}
         </p>
       )}
       {!overlayFile && (
-        <p className="muted small">Calibrate the court and analyse again to see court lines and the players.</p>
+        <p className="muted small">
+          {live
+            ? "Court lines and the players appear here once the first few minutes are tracked."
+            : "Calibrate the court and analyse again to see court lines and the players."}
+        </p>
       )}
       {data.ball && (
         <p className="muted small">

@@ -49,7 +49,7 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
           </a>
         </div>
         <p className="muted small" style={{ marginTop: 0 }}>
-          {report.points} points · {report.shots} shots · a point lasted {Math.round(report.avg_point_s)} s and{" "}
+          {report.points} point{report.points === 1 ? "" : "s"} · {report.shots} shots · a point lasted {Math.round(report.avg_point_s)} s and{" "}
           {Math.round(report.avg_shots_per_point)} shots on average
           {report.longest_point
             ? ` · longest ${Math.round(report.longest_point.duration_s)} s at ${formatTime(report.longest_point.start_s)}`

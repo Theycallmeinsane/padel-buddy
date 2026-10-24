@@ -41,7 +41,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import __version__, court
+from . import __version__, court, files
 from .calibration import Calibration
 from .config import BallConfig, EngineConfig
 from .schemas import BallSummary
@@ -272,14 +272,23 @@ def read_frames(
         proc.wait()
 
 
-def player_boxes(tracks_csv: str | Path | None, max_gap_s: float = 0.25) -> Callable[[float], list[Box]]:
-    """The players' boxes (source pixels) at the tracked frame nearest to a time."""
-    if not tracks_csv or not Path(tracks_csv).exists():
+def player_boxes(
+    tracks: str | Path | list[dict] | None, max_gap_s: float = 0.25
+) -> Callable[[float], list[Box]]:
+    """The players' boxes (source pixels) at the tracked frame nearest to a time.
+
+    ``tracks`` is tracks.csv, or its rows already in memory.
+    """
+    if isinstance(tracks, list):
+        rows: Iterable[dict] = tracks
+    elif tracks and Path(tracks).exists():
+        with open(tracks) as fh:
+            rows = list(csv.DictReader(fh))
+    else:
         return lambda t: []
     by_time: dict[float, list[Box]] = defaultdict(list)
-    with open(tracks_csv) as fh:
-        for r in csv.DictReader(fh):
-            by_time[float(r["time_s"])].append(tuple(float(r[k]) for k in ("x1", "y1", "x2", "y2")))
+    for r in rows:
+        by_time[float(r["time_s"])].append(tuple(float(r[k]) for k in ("x1", "y1", "x2", "y2")))
     times = sorted(by_time)
 
     def at(t: float) -> list[Box]:
@@ -293,6 +302,97 @@ def player_boxes(tracks_csv: str | Path | None, max_gap_s: float = 0.25) -> Call
     return at
 
 
+class BallRun:
+    """The ball in one video, tracked a batch of points at a time.
+
+    Points are independent (each starts its own motion history), so tracking
+    them in several batches gives the same flights as all at once; while a
+    match is analysed the batches follow the player tracking. ``write``
+    publishes everything found so far.
+    """
+
+    def __init__(self, video_path: str | Path, calibration: Calibration, config: EngineConfig | None = None):
+        self.video = video_path
+        self.cfg = (config or EngineConfig()).ball
+        self.info = probe(video_path)
+        self.tracker = BallTracker(self.info.size, calibration, self.cfg)
+        self.calib = calibration.scaled_to(self.info.size)
+        self.spans: list[list[float]] = []
+        self.flights: list[Flight] = []
+
+    def track(
+        self,
+        spans: list[tuple[float, float]],
+        boxes_at: Callable[[float], list[Box]],
+        on_progress: ProgressFn | None = None,
+    ) -> tuple[list[list[float]], list[Flight]]:
+        """Flights within ``spans`` (padded and merged), one ball per frame; call ``add`` to keep them."""
+        cfg, info = self.cfg, self.info
+        report = on_progress or (lambda p: None)
+        merged: list[list[float]] = []
+        for a, b in sorted(spans):
+            a, b = max(0.0, a - cfg.span_pad_s), min(info.duration_s, b + cfg.span_pad_s)
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            elif b > a:
+                merged.append([a, b])
+        total = sum(b - a for a, b in merged) or 1.0
+
+        # Several points are tracked at once: OpenCV and FFmpeg use the other cores meanwhile.
+        def track_span(span: list[float]) -> list[Flight]:
+            a, b = span
+            return self.tracker.track(prefetch(read_frames(self.video, a, b, info.fps, self.tracker.size), 8), boxes_at)
+
+        workers = cfg.workers or max(1, min(4, (os.cpu_count() or 1) // 4))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ball") as pool:
+            futures = {pool.submit(track_span, span): span for span in merged}
+            done_s = 0.0
+            for fut in as_completed(futures):
+                fut.result()  # a failed point fails the run here
+                a, b = futures[fut]
+                done_s += b - a
+                report(min(done_s / total, 0.99))
+        # Flights from different points never share a frame, so this matches doing it for all points at once.
+        return merged, one_per_frame([fl for fut in futures for fl in fut.result()], cfg.min_points)
+
+    def add(self, spans: list[list[float]], flights: list[Flight]) -> None:
+        self.spans += spans
+        self.flights += flights
+
+    def write(self, out_dir: str | Path) -> BallSummary:
+        """ball_track.json and ball.json with everything kept so far."""
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        info, flights, spans = self.info, self.flights, sorted(self.spans)
+        points = sorted((p, k) for k, fl in enumerate(flights) for p in fl.points)
+        found = [b for fl in flights for b in bounces(fl, self.tracker.scale, self.calib)]
+        found.sort(key=lambda b: b.time_s)
+        track = {
+            "version": 1,
+            "size": list(info.size),
+            "fps": round(info.fps, 3),
+            "spans": [[round(a, 2), round(b, 2)] for a, b in spans],
+            # Sample i: t[i], uv[2i:2i+2] in source pixels, flight[i]
+            "t": [round(p[1], 3) for p, _ in points],
+            "uv": [round(c * self.tracker.scale, 1) for p, _ in points for c in p[2:]],
+            "flight": [k for _, k in points],
+            "bounces": [vars(b) for b in found],
+        }
+        files.write_text(out / "ball_track.json", json.dumps(track, separators=(",", ":")))
+        frames_searched = sum(math.floor(b * info.fps) - math.ceil(a * info.fps) for a, b in spans)
+        summary = BallSummary(
+            engine_version=__version__,
+            searched_s=round(sum(b - a for a, b in spans), 1),
+            ball_frames=len(points),
+            seen_fraction=round(len(points) / frames_searched, 3) if frames_searched > 0 else 0.0,
+            flights=len(flights),
+            bounces=len(found),
+            outputs={"track": "ball_track.json"},
+        )
+        files.write_text(out / "ball.json", summary.model_dump_json(indent=2))
+        return summary
+
+
 def run_ball(
     video_path: str | Path,
     calibration: Calibration,
@@ -303,66 +403,9 @@ def run_ball(
     on_progress: ProgressFn | None = None,
 ) -> BallSummary:
     """Track the ball within ``spans`` (usually the points) of one video."""
-    cfg = (config or EngineConfig()).ball
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    info = probe(video_path)
-    tracker = BallTracker(info.size, calibration, cfg)
-    calib = calibration.scaled_to(info.size)
-    boxes_at = player_boxes(tracks_csv)
-    report = on_progress or (lambda p: None)
-
-    merged: list[list[float]] = []
-    for a, b in sorted(spans):
-        a, b = max(0.0, a - cfg.span_pad_s), min(info.duration_s, b + cfg.span_pad_s)
-        if merged and a <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], b)
-        elif b > a:
-            merged.append([a, b])
-    total = sum(b - a for a, b in merged) or 1.0
-
-    # Points are independent (each starts its own motion history), so several
-    # are tracked at once: OpenCV and FFmpeg use the other cores meanwhile.
-    def track_span(span: list[float]) -> list[Flight]:
-        a, b = span
-        return tracker.track(prefetch(read_frames(video_path, a, b, info.fps, tracker.size), 8), boxes_at)
-
-    workers = cfg.workers or max(1, min(4, (os.cpu_count() or 1) // 4))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ball") as pool:
-        futures = {pool.submit(track_span, span): span for span in merged}
-        done_s = 0.0
-        for fut in as_completed(futures):
-            fut.result()  # a failed point fails the run here
-            a, b = futures[fut]
-            done_s += b - a
-            report(min(done_s / total, 0.99))
-    flights = one_per_frame([fl for fut in futures for fl in fut.result()], cfg.min_points)
-
-    points = sorted((p, k) for k, fl in enumerate(flights) for p in fl.points)
-    found = [b for fl in flights for b in bounces(fl, tracker.scale, calib)]
-    found.sort(key=lambda b: b.time_s)
-    track = {
-        "version": 1,
-        "size": list(info.size),
-        "fps": round(info.fps, 3),
-        "spans": [[round(a, 2), round(b, 2)] for a, b in merged],
-        # Sample i: t[i], uv[2i:2i+2] in source pixels, flight[i]
-        "t": [round(p[1], 3) for p, _ in points],
-        "uv": [round(c * tracker.scale, 1) for p, _ in points for c in p[2:]],
-        "flight": [k for _, k in points],
-        "bounces": [vars(b) for b in found],
-    }
-    (out / "ball_track.json").write_text(json.dumps(track, separators=(",", ":")))
-    frames_searched = sum(math.floor(b * info.fps) - math.ceil(a * info.fps) for a, b in merged)
-    summary = BallSummary(
-        engine_version=__version__,
-        searched_s=round(total if merged else 0.0, 1),
-        ball_frames=len(points),
-        seen_fraction=round(len(points) / frames_searched, 3) if frames_searched > 0 else 0.0,
-        flights=len(flights),
-        bounces=len(found),
-        outputs={"track": "ball_track.json"},
-    )
-    (out / "ball.json").write_text(summary.model_dump_json(indent=2))
-    report(1.0)
+    run = BallRun(video_path, calibration, config)
+    run.add(*run.track(spans, player_boxes(tracks_csv), on_progress))
+    summary = run.write(out_dir)
+    if on_progress:
+        on_progress(1.0)
     return summary

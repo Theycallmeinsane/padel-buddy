@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__, court
+from . import __version__, court, files
 from .config import EngineConfig, ShotsConfig
 from .schemas import PointInfo, ShotInfo, ShotsSummary
 
@@ -322,21 +322,27 @@ def read_hits(path: str | Path) -> np.ndarray:
 
 
 def read_rallies(clips_json: str | Path) -> list[Rally]:
-    data = json.loads(Path(clips_json).read_text())
+    data = json.loads(Path(clips_json).read_bytes())
     return [Rally(r["index"], r["start_s"], r["end_s"]) for r in data.get("rallies", [])]
 
 
-def run_shots(out_dir: str | Path, config: EngineConfig | None = None) -> ShotsSummary:
-    """Shots and point endings for a run folder that has clips and tracking (and ideally the ball)."""
+def run_shots(out_dir: str | Path, config: EngineConfig | None = None, until_s: float | None = None) -> ShotsSummary:
+    """Shots and point endings for a run folder that has clips and tracking (and ideally the ball).
+
+    With ``until_s``, only the points over before then: the rest of the
+    match is still being analysed.
+    """
     cfg = (config or EngineConfig()).shots
     out = Path(out_dir)
-    overlay = json.loads((out / "overlay.json").read_text())
+    overlay = json.loads((out / "overlay.json").read_bytes())
     ball_path = out / "ball_track.json"
-    ball = Ball(json.loads(ball_path.read_text())) if ball_path.exists() else None
+    ball = Ball(json.loads(ball_path.read_bytes())) if ball_path.exists() else None
+    rallies = read_rallies(out / "clips.json")
+    if until_s is not None:
+        rallies = [r for r in rallies if r.end_s < until_s]
     shots, points = find_shots(
-        read_hits(out / "hits.csv"), read_rallies(out / "clips.json"), Players(overlay), ball,
-        NetBand(overlay["court_to_image"]), cfg,
+        read_hits(out / "hits.csv"), rallies, Players(overlay), ball, NetBand(overlay["court_to_image"]), cfg,
     )
     summary = ShotsSummary(engine_version=__version__, shots=shots, points=points, outputs={"shots": "shots.json"})
-    (out / "shots.json").write_text(summary.model_dump_json())
+    files.write_text(out / "shots.json", summary.model_dump_json())
     return summary

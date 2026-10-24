@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Overlay } from "../lib/api";
-import { playerAt, suggestions, toSource } from "../lib/tags";
+import { liveNames, playerAt, suggestions, toSource } from "../lib/tags";
 
 const overlay = {
   size: [1920, 1080],
@@ -29,5 +29,10 @@ describe("tagging a player", () => {
 
   it("suggests this match's names first, each once", () => {
     expect(suggestions({ P1: "Maya", P2: "Ali" }, ["ali", "Sam", "Maya"])).toEqual(["Maya", "Ali", "Sam"]);
+  });
+
+  it("shows the names tags gave so far while analysing, moving a saved name if a tag says so", () => {
+    expect(liveNames({ P1: "Maya", P2: "Ali" }, { P3: "maya" })).toEqual({ P2: "Ali", P3: "maya" });
+    expect(liveNames({ P1: "Maya" }, {})).toEqual({ P1: "Maya" });
   });
 });

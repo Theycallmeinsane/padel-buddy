@@ -303,6 +303,16 @@ class OutputConfig(BaseModel):
     heatmaps: bool = True
 
 
+class LiveConfig(BaseModel):
+    enabled: bool = Field(
+        True,
+        description="Publish results while a calibrated match is analysed: the points first, then stats, the ball, "
+        "shots and the report so far after every stretch of video tracked. Point clips and the ball are worked on "
+        "alongside tracking. Best clips, reels and shorts still come at the end.",
+    )
+    every_s: float = Field(300.0, gt=0, description="Publish after every this many seconds of video tracked.")
+
+
 class EngineConfig(BaseModel):
     detector: DetectorConfig = DetectorConfig()
     tracking: TrackingConfig = TrackingConfig()
@@ -313,3 +323,4 @@ class EngineConfig(BaseModel):
     shots: ShotsConfig = ShotsConfig()
     report: ReportConfig = ReportConfig()
     output: OutputConfig = OutputConfig()
+    live: LiveConfig = LiveConfig()
