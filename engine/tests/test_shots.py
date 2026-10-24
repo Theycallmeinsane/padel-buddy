@@ -1,5 +1,7 @@
 import json
 
+import numpy as np
+
 import match_fixture as mf
 from padel_engine.config import EngineConfig
 from padel_engine.shots import Ball, NetBand, Players, Rally, find_shots, run_shots
@@ -62,6 +64,22 @@ def test_how_each_point_ended():
     assert (winner.ending, winner.won_by, winner.last_player, winner.shots) == ("winner", "B", "P3", 8)
     assert (net.ending, net.detail, net.won_by, net.last_player) == ("error", "net", "B", "P2")
     assert (lost.ending, lost.won_by) == ("unknown", None)
+    assert all(p.teams == {"A": ["P1", "P2"], "B": ["P3", "P4"]} for p in points)
+
+
+def test_teams_are_whoever_shares_a_half_during_each_point():
+    """P2 and P3 swap ends between points: from then on P1 partners P3, and P2 partners P4."""
+    overlay = mf.overlay()
+    for pid, other in (("P2", "P3"), ("P3", "P2")):
+        t = np.asarray(overlay["players"][pid]["t"])
+        xy = np.asarray(overlay["players"][pid]["xy"]).reshape(-1, 2)
+        xy[t >= 15.0] = mf.SPOTS[other]
+        overlay["players"][pid]["xy"] = xy.reshape(-1).tolist()
+    players = Players(overlay)
+    assert players.during(1.0, 10.0).sides() == {"A": ["P1", "P2"], "B": ["P3", "P4"]}
+    assert players.during(20.0, 22.4).sides() == {"A": ["P1", "P3"], "B": ["P2", "P4"]}
+    # Changing ends during a stretch: each counts on the side they spent most of it on.
+    assert players.during(14.0, 22.0).sides() == {"A": ["P1", "P3"], "B": ["P2", "P4"]}
 
 
 def test_run_shots_reads_and_writes_the_run_folder(tmp_path):

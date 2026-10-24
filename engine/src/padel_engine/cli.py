@@ -66,8 +66,12 @@ def track(
     device: Optional[str] = typer.Option(None, help="cpu, cuda:0, mps"),
     preview: bool = typer.Option(False, help="Also write a video with boxes and a minimap burnt in."),
     config: Optional[Path] = typer.Option(None, exists=True, help="JSON file with EngineConfig overrides."),
+    detections: Optional[Path] = typer.Option(
+        None, exists=True, dir_okay=False,
+        help="detections.npz from an earlier run of this video: track again from it, without the detector.",
+    ),
 ) -> None:
-    """Find and follow the four players; write tracks, stats, heatmaps and the viewer overlay."""
+    """Find and follow the players (any number, who is who decided after); write tracks, stats, heatmaps and the overlay."""
     from .pipeline import run_tracking
 
     cfg = _load_config(config)
@@ -80,7 +84,9 @@ def track(
     cfg.output.preview_video = preview
 
     calib = Calibration.load(calibration)
-    summary = _with_progress("Tracking", lambda cb: run_tracking(video, calib, out, cfg, on_progress=cb))
+    summary = _with_progress(
+        "Tracking", lambda cb: run_tracking(video, calib, out, cfg, on_progress=cb, detections=detections)
+    )
     _print_tracking(summary, out)
 
 
@@ -209,7 +215,7 @@ def _print_tracking(summary, out: Path) -> None:
     typer.echo(f"\nTracking results in {out}/")
     for p in summary.players:
         typer.echo(
-            f"  {p.player} (team {p.team}): seen {p.seen_fraction:4.0%}  "
+            f"  {p.player}: seen {p.seen_fraction:4.0%}  "
             f"{p.distance_m:6.0f} m  net {p.zone_share['net']:4.0%}  back {p.zone_share['back']:4.0%}"
         )
 
@@ -239,7 +245,10 @@ def _print_report(report, out: Path) -> None:
         f"Report: {out}/report.md"
     )
     for t in report.teams:
-        typer.echo(f"  Team {t.team} ({', '.join(t.players)}): won {t.points_won}, {t.winners} winners, {t.errors} errors")
+        typer.echo(
+            f"  {' and '.join(t.players)}: won {t.points_won} of {t.points} points together, {t.winners} winners, "
+            f"{t.errors} errors"
+        )
     for p in report.players:
         reel = f"  reel {out}/{p.reel}" if p.reel else ""
         typer.echo(f"  {p.player}: {p.shots} shots, {p.winners} winners, {p.errors} errors{reel}")

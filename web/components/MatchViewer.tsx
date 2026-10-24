@@ -2,14 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot, Tag } from "@/lib/api";
-import { KIND_LABELS } from "@/lib/shots";
+import { KIND_LABELS, sideLabel } from "@/lib/shots";
 import { playerAt, toSource } from "@/lib/tags";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
 import { NameBox, TagList, type SaveTag } from "./Tags";
 
-// Same colours as the engine's preview video: team A in blues, team B warm.
-export const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
+// Same colours as the engine's preview video, one per player in turn.
+const PLAYER_COLORS = ["#1e8ceb", "#28dce6", "#f58c28", "#e63c3c", "#50c85a", "#c850c8", "#f0d228", "#785aa0", "#149696", "#f57896"];
+
+export function playerColor(pid: string): string {
+  const n = Number(pid.slice(1));
+  return n > 0 ? PLAYER_COLORS[(n - 1) % PLAYER_COLORS.length] : "#ffffff";
+}
+
 const TEAM_COLORS: Record<string, string> = { A: "#2d6fd6", B: "#e0702b" };
 const SHOT_LABEL_S = 1.0; // a shot's name shows over the hitter this long
 const BOX_GAP_S = 0.3; // hide a player when their nearest sample is further away than this
@@ -291,7 +297,7 @@ export default function MatchViewer({
       </div>
 
       {rallies.length > 0 && (
-        <Timeline rallies={rallies} best={best} endings={endings} total={total} t={matchTime} onSeek={seek} />
+        <Timeline rallies={rallies} best={best} endings={endings} names={names} total={total} t={matchTime} onSeek={seek} />
       )}
 
       {tagging && hint && <p className="small muted">{hint}</p>}
@@ -328,9 +334,10 @@ export default function MatchViewer({
 
 function endingText(p: PointEnding, names: Record<string, string>): string {
   if (p.ending === "unknown" || !p.won_by) return "";
-  const who = p.last_player ? names[p.last_player] ?? p.last_player : `team ${p.last_team}`;
-  if (p.ending === "winner") return ` · won by team ${p.won_by}: winner by ${who}`;
-  return ` · won by team ${p.won_by}: ${who} hit ${p.detail === "net" ? "the net" : "it out"}`;
+  const who = p.last_player ? names[p.last_player] ?? p.last_player : sideLabel(p, p.last_team, names);
+  const won = sideLabel(p, p.won_by, names);
+  if (p.ending === "winner") return ` · won by ${won}: winner by ${who}`;
+  return ` · won by ${won}: ${who} hit ${p.detail === "net" ? "the net" : "it out"}`;
 }
 
 function paint(
@@ -393,7 +400,7 @@ function paint(
       const focused = marks.focus === pid;
       ctx.globalAlpha = marks.focus && !focused ? 0.35 : 1;
       ctx.lineWidth = (focused ? 3.5 : 2) * px;
-      ctx.strokeStyle = ctx.fillStyle = PLAYER_COLORS[pid] ?? "#ffffff";
+      ctx.strokeStyle = ctx.fillStyle = playerColor(pid);
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       const shot = played.get(pid);
       ctx.fillText(`${marks.names[pid] ?? pid}${shot ? ` · ${KIND_LABELS[shot.kind]}` : ""}`, x1, y1 - 3 * px);
@@ -512,7 +519,7 @@ function Minimap({
         for (let k = lowerBound(p.t, t - TRAIL_S); k <= i; k++) trail.push(P(p.xy[2 * k], p.xy[2 * k + 1]).join(","));
         const [x, y] = P(p.xy[2 * i], p.xy[2 * i + 1]);
         return (
-          <g key={pid} style={{ color: PLAYER_COLORS[pid] }}>
+          <g key={pid} style={{ color: playerColor(pid) }}>
             <polyline points={trail.join(" ")} className="trail" />
             <circle cx={x} cy={y} r={0.38} fill="currentColor" />
             <text x={x} y={y - 0.6} className="mm-label">
@@ -541,6 +548,7 @@ function Timeline({
   rallies,
   best,
   endings,
+  names,
   total,
   t,
   onSeek,
@@ -548,6 +556,7 @@ function Timeline({
   rallies: Rally[];
   best: Set<number>;
   endings: Map<number, PointEnding>;
+  names: Record<string, string>;
   total: number;
   t: number;
   onSeek: (t: number) => void;
@@ -574,7 +583,7 @@ function Timeline({
             borderBottom: endings.get(r.index)?.won_by ? `3px solid ${TEAM_COLORS[endings.get(r.index)!.won_by!]}` : undefined,
           }}
           title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
-            endings.get(r.index)?.won_by ? `, won by team ${endings.get(r.index)!.won_by}` : ""
+            endings.get(r.index)?.won_by ? `, won by ${sideLabel(endings.get(r.index)!, endings.get(r.index)!.won_by, names)}` : ""
           }`}
           aria-label={`Play point ${r.index + 1} at ${formatTime(r.start_s)}`}
           onClick={(e) => {

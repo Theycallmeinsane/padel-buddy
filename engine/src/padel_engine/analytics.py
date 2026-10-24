@@ -12,17 +12,33 @@ from . import court
 from .config import AnalyticsConfig
 
 
+JUMP_SLACK_M = 1.0  # on top of max speed: position noise, mostly at the far wall
+TOP_SPEED_WINDOW_S = 1.0
+TOP_SPEED_PERCENTILE = 99.9
+
+
 @dataclass
 class Trajectory:
     t: np.ndarray  # (N,) seconds, increasing
     xy: np.ndarray  # (N, 2) court metres
 
 
-def segments(t: np.ndarray, max_gap_s: float) -> list[slice]:
-    """Split a time series wherever consecutive samples are too far apart."""
+def segments(
+    t: np.ndarray, max_gap_s: float, xy: np.ndarray | None = None, max_speed_mps: float | None = None
+) -> list[slice]:
+    """Split a time series wherever consecutive samples are too far apart.
+
+    With ``xy`` and ``max_speed_mps`` it is also split at jumps no player
+    could make (a number that moved to someone else), so smoothing does not
+    turn them into a sprint.
+    """
     if len(t) == 0:
         return []
-    breaks = np.where(np.diff(t) > max_gap_s)[0] + 1
+    split = np.diff(t) > max_gap_s
+    if xy is not None and max_speed_mps is not None and len(t) > 1:
+        step = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+        split |= step > max_speed_mps * np.diff(t) + JUMP_SLACK_M
+    breaks = np.where(split)[0] + 1
     bounds = [0, *breaks.tolist(), len(t)]
     return [slice(a, b) for a, b in zip(bounds[:-1], bounds[1:])]
 
@@ -56,6 +72,7 @@ def smooth(
     cfg: AnalyticsConfig,
     meas_cov: np.ndarray | None = None,
     cache: SmoothCache | None = None,
+    max_speed_mps: float | None = None,
 ) -> Trajectory:
     """Kalman (constant-velocity) filter plus RTS smoother, per continuous segment.
 
@@ -63,12 +80,13 @@ def smooth(
     metres. Passing it lets near-side points, which are precise, be followed
     closely while far-side points, which are noisy in depth, are smoothed
     harder. Without it every sample gets the same isotropic uncertainty.
+    With ``max_speed_mps``, jumps faster than that start a new segment.
     """
     n = len(traj.t)
     if meas_cov is None:
         meas_cov = np.broadcast_to(np.eye(2) * cfg.default_position_std_m**2, (n, 2, 2))
     out = traj.xy.astype(np.float64).copy()
-    for seg in segments(traj.t, cfg.max_gap_s):
+    for seg in segments(traj.t, cfg.max_gap_s, traj.xy, max_speed_mps):
         if seg.stop - seg.start <= 1:
             continue
         t, z, r = traj.t[seg], traj.xy[seg], meas_cov[seg]
@@ -130,27 +148,40 @@ def _rts_smooth(t: np.ndarray, z: np.ndarray, R: np.ndarray, accel_std: float) -
 
 
 def movement(traj: Trajectory, cfg: AnalyticsConfig, max_speed_mps: float) -> dict[str, float]:
-    """Distance and speed over continuous segments, ignoring impossible jumps."""
+    """Distance and speed over continuous segments, ignoring impossible jumps.
+
+    Top speed is the fastest a player held for a second: the 99.9th
+    percentile of one-second average speeds, so a single glitch does not set
+    it but a handful of sprints do.
+    """
     dist = 0.0
     moving_time = 0.0
-    speeds: list[np.ndarray] = []
-    for seg in segments(traj.t, cfg.max_gap_s):
+    held: list[np.ndarray] = []
+    for seg in segments(traj.t, cfg.max_gap_s, traj.xy, max_speed_mps):
         t, xy = traj.t[seg], traj.xy[seg]
         if len(t) < 2:
             continue
         step = np.linalg.norm(np.diff(xy, axis=0), axis=1)
         dt = np.diff(t)
-        v = step / np.maximum(dt, 1e-6)
-        ok = v <= max_speed_mps * 1.5
-        dist += float(step[ok].sum())
+        ok = step / np.maximum(dt, 1e-6) <= max_speed_mps * 1.5
+        step = np.where(ok, step, 0.0)
+        dist += float(step.sum())
         moving_time += float(dt[ok].sum())
-        speeds.append(v[ok])
-    allv = np.concatenate(speeds) if speeds else np.zeros(0)
+        held.append(_held_speeds(t, np.concatenate([[0.0], np.cumsum(step)])))
+    speeds = np.concatenate(held) if held else np.zeros(0)
     return {
         "distance_m": dist,
         "avg_speed_mps": dist / moving_time if moving_time > 0 else 0.0,
-        "top_speed_mps": float(np.percentile(allv, 95)) if len(allv) else 0.0,
+        "top_speed_mps": float(np.percentile(speeds, TOP_SPEED_PERCENTILE)) if len(speeds) else 0.0,
     }
+
+
+def _held_speeds(t: np.ndarray, travelled: np.ndarray) -> np.ndarray:
+    """Average speed over every window of about a second (``travelled`` is the distance so far at each sample)."""
+    end = np.searchsorted(t, t + TOP_SPEED_WINDOW_S - 1e-9)
+    ok = end < len(t)
+    start, end = np.nonzero(ok)[0], end[ok]
+    return (travelled[end] - travelled[start]) / (t[end] - t[start])
 
 
 def zone_share(xy: np.ndarray) -> dict[str, float]:

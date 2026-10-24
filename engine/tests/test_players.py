@@ -2,19 +2,21 @@ from collections import Counter
 from itertools import count
 
 import numpy as np
+import pytest
 
 from padel_engine import court
 from padel_engine.calibration import Calibration
 from padel_engine.config import TrackingConfig
 from padel_engine.detection import Detection
+from padel_engine.identity import group_people
 from padel_engine.players import (
+    APPEARANCE_SHAPE,
     Candidate,
     PlayerAssigner,
     Segment,
     appearance_of,
     distinct_people,
     load_segments,
-    repair_identities,
     save_segments,
 )
 from synthetic import H, W, Camera, ScriptedTracker, paths, render_frame
@@ -30,8 +32,9 @@ def cand(x, y, appearance=None, track_id=None):
 
 
 def colour(hue_bin):
-    hist = np.zeros((18, 4), np.float32)
-    hist[hue_bin, 3] = 1
+    """Shirt, shorts and legs all one strong hue."""
+    hist = np.zeros(APPEARANCE_SHAPE, np.float32)
+    hist[:, 2 * hue_bin + 1] = 1
     return hist
 
 
@@ -45,13 +48,18 @@ def times(start, end):
     return [round(float(t), 1) for t in np.arange(start, end - 1e-9, 1 / FPS)]
 
 
+def who(assigner):
+    """Who each of the assigner's segments turned out to be, once grouped into people."""
+    return group_people(assigner.segments, assigner.cfg.model_copy(update={"min_player_s": 2.0})).labels
+
+
 def play(assigner, frames):
-    """Feed (time, candidates) frames; each frame's {player: candidate index} after the repair."""
+    """Feed (time, candidates) frames; each frame's {player: candidate index} once people are grouped."""
     seen = []
     for t, cands in frames:
         out = assigner.assign(t, cands)
         seen.append({assigner.slots[pid].segment: i for pid, i in out.items()})
-    ids = assigner.identities()
+    ids = who(assigner)
     return [{ids[seg]: i for seg, i in frame.items()} for frame in seen]
 
 
@@ -78,8 +86,8 @@ def run(duration_s=30.0, seed=0, spectators=((11.8, 6.0),), missed=None, handove
         result = assigner.assign(i / FPS, cands)
         truth = tracker.truth[-1]
         seen.append([(truth.get(idx), assigner.slots[pid].segment) for pid, idx in result.items()])
-    # Count what the outputs would say: the labels after the repair.
-    ids = assigner.identities()
+    # Count what the outputs would say: the labels once people are grouped.
+    ids = who(assigner)
     pairs = Counter((person, ids[seg]) for frame in seen for person, seg in frame if person is not None)
     spectator_assigned = sum(person is None for frame in seen for person, _ in frame)
     return pairs, spectator_assigned
@@ -100,8 +108,8 @@ def test_four_players_keep_their_identity():
 
 def test_a_missed_player_is_not_swapped_for_someone_just_off_court():
     a = PlayerAssigner(TrackingConfig())
-    a.assign(0.0, [cand(0.4, 9.0, colour(0), track_id=1)])
-    # The player at the side wall is not detected; someone by the net post is within reach.
+    a.assign(0.0, [cand(0.8, 8.8, colour(0), track_id=1)])
+    # The player near the side wall is not detected; someone by the net post is within reach.
     assert a.assign(0.1, [cand(-0.4, 9.8, colour(9), track_id=2)]) == {}
 
 
@@ -159,8 +167,8 @@ def test_teammate_walking_into_a_vanished_player_s_spot_keeps_their_number():
     assert all(f == {"P1": 0, "P2": 1, "P3": 2, "P4": 3} for f in out[:40])
     assert all(f == {"P2": 0, "P3": 1, "P4": 2} for f in out[40:70])  # nobody else becomes P1
     assert all(f == {"P2": 0, "P1": 1, "P3": 2, "P4": 3} for f in out[70:])
-    # The live pass gets this right on its own; the repair has nothing to fix.
-    assert a.identities() == [s.player_id for s in a.segments]
+    # The live pass gets this right on its own; grouping keeps it.
+    assert who(a) == [s.player_id for s in a.segments]
 
 
 def test_teammates_back_in_each_other_s_places_get_their_own_numbers():
@@ -172,30 +180,9 @@ def test_teammates_back_in_each_other_s_places_get_their_own_numbers():
     frames += [(t, [cand(3.0, 4.0, a2, 5), *far()]) for t in times(7, 8)]
     frames += [(t, [cand(3.0, 4.0, a2, 5), cand(7.0, 4.0, a1, 6), *far()]) for t in times(8, 12)]
     out = play(PlayerAssigner(TrackingConfig()), frames)
-    # Live, the empty P1 takes whoever turns up in P1's spot; the repair puts it right by colour.
+    # Live, the empty P1 takes whoever turns up in P1's spot; grouping puts it right by colour.
     assert all(f["P2"] == 0 and f["P3"] == 1 for f in out[70:80])
     assert all(f == {"P1": 1, "P2": 0, "P3": 2, "P4": 3} for f in out[80:])
-
-
-def test_the_repair_never_gives_one_number_to_two_people_at_once():
-    rng = np.random.default_rng(1)
-    segments = []
-    for pid in ("P1", "P2", "P3", "P4"):
-        frame = int(rng.integers(0, 20))
-        while frame < 2000:
-            seg = Segment(pid, frame)
-            look = colour(4 * int(rng.integers(0, 4)))  # anyone's kit: lots of conflicts to settle
-            for f in range(frame, frame + int(rng.integers(5, 200))):
-                seg.add(f, look if rng.random() < 0.7 else None)
-            segments.append(seg)
-            frame = seg.last + int(rng.integers(1, 30))
-    segments.sort(key=lambda s: s.first)
-    labels = repair_identities(segments, TrackingConfig())
-    assert labels != [s.player_id for s in segments]
-    for i, s in enumerate(segments):
-        for j, o in enumerate(segments[:i]):
-            if s.first <= o.last and o.first <= s.last:
-                assert labels[i] != labels[j], (s, o)
 
 
 def test_lost_player_ignores_someone_who_looks_different():
@@ -223,6 +210,54 @@ def test_player_followed_outside_the_lines_is_let_go():
     assert out["P1"] == 4
 
 
+def test_people_in_the_doorways_by_the_net_posts_are_not_players():
+    """Someone waits in each doorway by the net, just inside the lines; P2 is never seen, so a slot is free."""
+    red, blue, green, grey = colour(0), colour(12), colour(6), colour(9)
+    waiting = lambda: [cand(0.1, 10.3, grey, 8), cand(9.8, 9.4, grey, 9)]  # noqa: E731
+    a = PlayerAssigner(TrackingConfig())
+    for t in times(0, 5):
+        out = a.assign(t, [cand(3.0, 4.0, red, 1), cand(3.0, 16.0, blue, 2), cand(7.0, 16.0, green, 3), *waiting()])
+        assert out == {"P1": 0, "P3": 1, "P4": 2}
+    # P1 walks into the doorway for a drink (in it from 8.6 s) and stays: let go 4 s later, like anyone off court.
+    followed = []
+    for t in times(5, 16):
+        k = min((t - 5.0) / 4.0, 1.0)
+        out = a.assign(t, [cand(3.0 - 2.7 * k, 4.0 + 5.6 * k, red, 1), cand(3.0, 16.0, blue, 2)])
+        followed.append(out.get("P1") == 0)
+    assert all(followed[:75]) and not any(followed[77:])
+    inside = sum(s.inside for s in a.segments if s.player_id == "P1")
+    assert 85 <= inside <= 87  # the walk is on court, the doorway is not
+
+
+@pytest.mark.parametrize("post_x", [0.2, -1.3])  # through the doorway, or outside the side glass
+def test_a_track_is_cut_where_its_person_walks_round_the_net(post_x):
+    """At a changeover P1 walks from the near half round the left net post to the far one; the tracker keeps them."""
+    red, blue = colour(0), colour(12)
+    a = PlayerAssigner(TrackingConfig())
+    for t in times(0, 6):
+        y = 6.0 + max(0.0, t - 1.0) * 1.6  # 6 m to 14 m from the near wall
+        x = 2.0 - (2.0 - post_x) * max(0.0, 1.0 - abs(y - court.NET_Y) / 2.5)  # out to the post and back in
+        a.assign(t, [cand(x, y, red, 1), cand(8.0, 16.0, blue, 2)])
+    p1 = [s for s in a.segments if s.player_id == "P1"]
+    assert [(s.side, s.crossed) for s in p1] == [("near", False), ("far", True)]
+    assert p1[1].after == a.segments.index(p1[0]) and p1[1].start_xy[1] > court.NET_Y + 0.5
+    assert who(a) == ["P1", "P2", "P1"]  # pieces grouped as one person again
+
+
+def test_a_far_player_at_the_net_placed_in_front_of_it_stays_on_their_side():
+    """The net hides a far player's feet as they come up to it, so they are placed up to a metre in front of it.
+
+    Nobody gets past the net away from its posts: their track is not cut, and counts as the far side.
+    """
+    red, blue = colour(0), colour(12)
+    a = PlayerAssigner(TrackingConfig())
+    for t in times(0, 9):
+        y = 9.2 + 3.8 * abs(np.sin(t * np.pi / 6))  # first seen in front of the net, back to 13 m, up to it again
+        out = a.assign(t, [cand(2.0, 3.0, blue, 1), cand(6.0, y, red, 2)])
+        assert out == {"P1": 0, "P2": 1}
+    assert [(s.side, s.crossed) for s in a.segments if s.player_id == "P2"] == [("far", False)]
+
+
 def test_two_boxes_on_one_player_are_one_candidate():
     a = PlayerAssigner(TrackingConfig(reacquire_after_s=1.0))
     a.assign(0.0, [cand(2.0, 4.0), cand(8.0, 4.0), cand(2.0, 16.0), cand(8.0, 16.0)])
@@ -240,14 +275,6 @@ def test_a_far_player_behind_a_near_one_is_kept():
     assert distinct_people([near, far, upper]) == [0, 1]
 
 
-def track(pid, first, last, look, after=None):
-    """A segment seen clearly on every frame from ``first`` to ``last``."""
-    s = Segment(pid, first, after=after)
-    for f in range(first, last + 1):
-        s.add(f, look)
-    return s
-
-
 def test_tracks_are_cut_where_two_players_part():
     """Teammates meet in the middle and part again: each track is cut there, but stays one person."""
     a1, a2, green, yellow = kit(0.7), kit(0.3), colour(6), colour(12)
@@ -260,99 +287,22 @@ def test_tracks_are_cut_where_two_players_part():
     cut = [(s.player_id, a.segments[s.after].player_id) for s in a.segments if s.after is not None]
     assert sorted(cut) == [("P1", "P1"), ("P2", "P2")]
     # Without tags the pieces stay together, exactly as if the tracks had never been cut.
-    assert a.identities() == [s.player_id for s in a.segments]
+    assert who(a) == [s.player_id for s in a.segments]
     assert play(PlayerAssigner(TrackingConfig(contact_m=0)), frames) == out
 
 
-def test_a_tag_fixes_a_swap_from_the_close_pass_before_it():
-    """Teammates in the same kit pass close twice; colours cannot tell them apart.
-
-    Someone tags the P2 box after the first pass as the P1 player: the
-    tracker swapped them there. Everything after that pass is fixed, on
-    both tracks, and nothing before it changes.
-    """
-    same, green, yellow = kit(0.5), colour(6), colour(12)
-    segments = [
-        track("P1", 0, 99, same), track("P1", 100, 199, same, after=0), track("P1", 200, 299, same, after=1),
-        track("P2", 0, 99, same), track("P2", 100, 199, same, after=3), track("P2", 200, 299, same, after=4),
-        track("P3", 0, 299, green), track("P4", 0, 299, yellow),
-    ]
-    cfg = TrackingConfig()
-    assert repair_identities(segments, cfg) == ["P1", "P1", "P1", "P2", "P2", "P2", "P3", "P4"]
-    assert repair_identities(segments, cfg, {4: "P1"}) == ["P1", "P2", "P2", "P2", "P1", "P1", "P3", "P4"]
-    # A second tag after the next pass says they swapped back.
-    assert repair_identities(segments, cfg, {4: "P1", 5: "P2"}) == ["P1", "P2", "P1", "P2", "P1", "P2", "P3", "P4"]
-    # Tags work with the colour repair off too.
-    off = TrackingConfig(repair_identities=False)
-    assert repair_identities(segments, off, {4: "P1"}) == ["P1", "P2", "P2", "P2", "P1", "P1", "P3", "P4"]
-
-
-def test_tags_never_give_one_number_to_two_people_at_once():
-    rng = np.random.default_rng(2)
-    made = []  # (segment, the segment it continues)
-    for pid in ("P1", "P2", "P3", "P4"):
-        frame, prev = int(rng.integers(0, 20)), None
-        while frame < 2000:
-            seg = Segment(pid, frame)
-            look = colour(4 * int(rng.integers(0, 4)))
-            for f in range(frame, frame + int(rng.integers(5, 200))):
-                seg.add(f, look if rng.random() < 0.7 else None)
-            joined = prev is not None and rng.random() < 0.6
-            made.append((seg, prev if joined else None))
-            prev = seg
-            frame = seg.last + (1 if joined else int(rng.integers(6, 30)))
-    made.sort(key=lambda m: m[0].first)
-    index = {id(s): i for i, (s, _) in enumerate(made)}
-    segments = []
-    for s, prev in made:
-        s.after = index[id(prev)] if prev is not None else None
-        segments.append(s)
-    cfg = TrackingConfig()
-    base = repair_identities(segments, cfg)
-    # Tags that agree with the repair are kept, and change nobody.
-    agree = {int(i): base[i] for i in rng.choice(len(segments), 12, replace=False)}
-    assert repair_identities(segments, cfg, agree) == base
-    # Tags at random can ask the impossible; still nobody is two places at once.
-    for _ in range(5):
-        pins = {int(i): f"P{int(rng.integers(1, 5))}" for i in rng.choice(len(segments), 12, replace=False)}
-        labels = repair_identities(segments, cfg, pins)
-        for i, s in enumerate(segments):
-            for j, o in enumerate(segments[:i]):
-                if s.first <= o.last and o.first <= s.last:
-                    assert labels[i] != labels[j], (s, o)
-
-
 def test_segments_survive_a_round_trip_to_disk(tmp_path):
-    same, green, yellow = kit(0.5), colour(6), colour(12)
-    segments = [
-        track("P1", 0, 99, same), track("P1", 100, 199, same, after=0),
-        track("P2", 0, 99, same), track("P2", 100, 199, same, after=2),
-        track("P3", 0, 199, green), track("P4", 0, 199, yellow), Segment("P4", 200, 210, 11),
-    ]
-    save_segments(tmp_path / "segments.json", segments)
+    a = PlayerAssigner(TrackingConfig())
+    red, blue = colour(0), colour(12)
+    for t in times(0, 2):
+        a.assign(t, [cand(2.0 + t, 4.0, red), cand(8.0, 4.0 + t, blue)])
+    a.assign(5.0, [cand(-0.05, 5.0, red)])  # back after a gap, just past the side line
+    save_segments(tmp_path / "segments.json", a.segments)
     loaded = load_segments(tmp_path / "segments.json")
-    assert [(s.player_id, s.first, s.last, s.frames, s.clear, s.after) for s in loaded] == [
-        (s.player_id, s.first, s.last, s.frames, s.clear, s.after) for s in segments
-    ]
-    assert np.allclose(loaded[4].colour, segments[4].colour, atol=1e-4) and loaded[6].colour is None
-    cfg = TrackingConfig()
-    assert repair_identities(loaded, cfg, {3: "P1"}) == repair_identities(segments, cfg, {3: "P1"})
-
-
-def test_a_tag_after_a_real_swap_finds_where_it_happened_by_colour():
-    """Teammates in different shirts pass close three times; the tracker swapped them at the second pass.
-
-    With both named at the start and one tag near the end, the colours show
-    which pass it was, so both tracks are put right from there.
-    """
-    a1, a2, green, yellow = colour(0), colour(4), colour(8), colour(12)
-    looks = [(a1, a2), (a1, a2), (a2, a1), (a2, a1)]  # what each slot's pieces really show
-    segments = []
-    for k, (p1, p2) in enumerate(looks):
-        segments.append(track("P1", 100 * k, 100 * k + 99, p1, after=2 * k - 2 if k else None))
-        segments.append(track("P2", 100 * k, 100 * k + 99, p2, after=2 * k - 1 if k else None))
-    segments += [track("P3", 0, 399, green), track("P4", 0, 399, yellow)]
-    cfg = TrackingConfig()
-    # Named at the start (the first pieces) and the P2 box near the end tagged as the P1 player.
-    labels = repair_identities(segments, cfg, {0: "P1", 1: "P2", 7: "P1"})
-    assert labels == ["P1", "P2", "P1", "P2", "P2", "P1", "P2", "P1", "P3", "P4"]
+    fields = (
+        "player_id", "first", "last", "frames", "clear", "after", "crossed", "side", "inside",
+        "start_t", "end_t", "start_xy", "end_xy",
+    )
+    assert [[getattr(s, f) for f in fields] for s in loaded] == [[getattr(s, f) for f in fields] for s in a.segments]
+    assert np.allclose(loaded[0].colour, a.segments[0].colour, atol=1e-4)
+    assert len(loaded) == 3 and loaded[2].start_xy == (-0.05, 5.0) and loaded[1].end_t == 1.9

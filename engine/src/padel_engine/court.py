@@ -91,6 +91,15 @@ def side_of(y: float) -> str:
     return "near" if y < NET_Y else "far"
 
 
+def team_at(y: float) -> str:
+    """The team of someone standing at court y: "A" on the camera's side of the net, "B" beyond it.
+
+    People rotate in and swap partners, so a team is whoever shares a half
+    during a point, not a fixed pair.
+    """
+    return "A" if y < NET_Y else "B"
+
+
 def zone_of(y: float) -> str:
     """Return the depth zone name for a court y coordinate."""
     d = abs(y - NET_Y)
@@ -98,6 +107,16 @@ def zone_of(y: float) -> str:
         if zone.min_from_net <= d < zone.max_from_net:
             return zone.name
     return "back"
+
+
+def by_net_post(x: float, y: float, across: float, along: float) -> bool:
+    """True when (x, y) is by a net post: within ``across`` of a side line (either side of it), ``along`` of the net.
+
+    The doors are there, so people waiting to play, fetching balls or
+    watching stand in them, often just inside the lines, and players walk
+    round the posts through them to change ends.
+    """
+    return abs(y - NET_Y) < along and min(abs(x), abs(WIDTH - x)) < across
 
 
 def inside(x: float, y: float, margin: float = 0.0) -> bool:

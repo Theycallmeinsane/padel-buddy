@@ -1,4 +1,4 @@
-"""A match report: what each player and team did, and what to work on.
+"""A match report: what each player and pair did, and what to work on.
 
 Built from shots.json, overlay.json and clips.json in a run folder. Movement
 counts only time inside points, so walking to pick up balls and towel breaks
@@ -7,8 +7,12 @@ numbers (time at the net, playing split, errors against winners, lobbing
 against a team that holds the net) and appear only when the match has enough
 points to go on.
 
+People rotate in and swap partners, so a team is a pair who played points
+together on one side of the net; each pair that played a few points gets its
+numbers, and each player their points with each partner.
+
 Each player also gets their own highlights: the points they finished with a
-winner, their overheads and the long points their team won, best first, cut
+winner, their overheads and the long points their side won, best first, cut
 into a short reel; and every winner they hit joined into a winners reel.
 
 Per kind of shot, each player's success rate is the share kept in play or
@@ -28,7 +32,8 @@ players/P1_winners.mp4 ..., and shorts/*.mp4.
 from __future__ import annotations
 
 import json
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +43,7 @@ from .config import EngineConfig
 from .schemas import (
     MatchReport, PlayerMoment, PlayerReport, PointInfo, Short, ShotInfo, ShotStat, ShotsSummary, TeamReport, Tip,
 )
-from .shots import Players
+from .shots import OTHER_TEAM, Players
 
 KINDS = ("serve", "return", "volley", "smash", "vibora", "bandeja", "lob", "flat", "groundstroke", "unknown")
 FORMATIONS = ("both_net", "split", "both_back", "other")
@@ -50,22 +55,22 @@ def build_report(shots: ShotsSummary, overlay: dict, clips: dict, cfg: EngineCon
     # While a match is analysed, shots cover only the points so far.
     covered = {p.rally for p in shots.points}
     rallies = {r["index"]: r for r in clips.get("rallies", []) if r["index"] in covered}
-    spans = [(r["start_s"], r["end_s"]) for r in rallies.values()]
     points = shots.points
-    teams_of = {pid: p["team"] for pid, p in overlay.get("players", {}).items()}
     last_shot = {}
     for s in shots.shots:
         last_shot[s.rally] = s  # shots are in time order
 
+    tracks = overlay.get("players", {})
     players = [
-        _player(pid, team, shots.shots, points, last_shot, overlay["players"][pid], spans, rallies, cfg)
-        for pid, team in sorted(teams_of.items())
+        _player(pid, shots.shots, points, last_shot, tracks[pid], rallies, cfg)
+        for pid in sorted(tracks, key=player_number)
     ]
     by_player = {p.player: p for p in players}
     people = Players(overlay)
     teams = [
-        _team(team, sorted(pid for pid, t in teams_of.items() if t == team), shots.shots, points, people, spans)
-        for team in sorted(set(teams_of.values()))
+        _team(pair, played, shots.shots, people, rallies)
+        for pair, played in pairs(points).items()
+        if len(played) >= cfg.report.min_pair_points
     ]
 
     durations = [r["end_s"] - r["start_s"] for r in rallies.values()]
@@ -92,14 +97,35 @@ def build_report(shots: ShotsSummary, overlay: dict, clips: dict, cfg: EngineCon
     return report
 
 
+def player_number(pid: str) -> int:
+    return int(pid[1:]) if pid[1:].isdigit() else 1_000_000
+
+
+def team_of(pid: str, point: PointInfo) -> str | None:
+    """The side ("A" or "B") ``pid`` played ``point`` on, or None if they weren't in it."""
+    return next((team for team, members in point.teams.items() if pid in members), None)
+
+
+def pairs(points: list[PointInfo]) -> dict[str, list[tuple[PointInfo, str]]]:
+    """Each pair who played points together ("P1+P3"), with those points and their side; most points first.
+
+    A side with one or three people on it (someone missed, or passing) makes
+    no pair.
+    """
+    found: dict[str, list[tuple[PointInfo, str]]] = defaultdict(list)
+    for p in points:
+        for team, members in p.teams.items():
+            if len(members) == 2:
+                found["+".join(sorted(members, key=player_number))].append((p, team))
+    return dict(sorted(found.items(), key=lambda kv: -len(kv[1])))
+
+
 def _player(
     pid: str,
-    team: str,
     shots: list[ShotInfo],
     points: list[PointInfo],
     last_shot: dict[int, ShotInfo],
     track: dict,
-    spans: list[tuple[float, float]],
     rallies: dict[int, dict],
     cfg: EngineConfig,
 ) -> PlayerReport:
@@ -107,27 +133,31 @@ def _player(
     kinds = Counter(s.kind for s in mine)
     ended = [(p, last_shot.get(p.rally)) for p in points if p.last_player == pid]
     errors = [s.kind for p, s in ended if p.ending == "error" and s is not None]
+    played = [(p, team) for p in points if (team := team_of(pid, p)) is not None]
+    partners = Counter(o for p, team in played for o in p.teams[team] if o != pid)
 
     t = np.asarray(track["t"], dtype=np.float64)
     xy = np.asarray(track["xy"], dtype=np.float64).reshape(-1, 2)
-    inside = in_spans(t, spans)
+    inside = in_spans(t, [(p.start_s, p.end_s) for p, _ in played])
     move = analytics.movement(
         analytics.Trajectory(t[inside], xy[inside]), cfg.analytics, cfg.tracking.max_speed_mps
     )
     return PlayerReport(
         player=pid,
-        team=team,
+        points=len(played),
+        points_won=sum(p.won_by == team for p, team in played),
+        partners=dict(sorted(partners.items(), key=lambda kv: (-kv[1], player_number(kv[0])))),
         shots=len(mine),
         shot_kinds={k: kinds[k] for k in KINDS if kinds[k]},
         winners=sum(p.ending == "winner" for p, _ in ended),
         errors=len(errors),
         errors_by_kind=dict(Counter(errors).most_common()),
-        distance_per_point_m=round(move["distance_m"] / len(points), 1) if points else 0.0,
+        distance_per_point_m=round(move["distance_m"] / len(played), 1) if played else 0.0,
         top_speed_mps=round(move["top_speed_mps"], 2),
         zone_share={k: round(v, 3) for k, v in analytics.zone_share(xy[inside]).items()},
         side_share={k: round(v, 3) for k, v in analytics.side_share(xy[inside]).items()},
-        highlights=player_moments(pid, team, shots, points, last_shot, rallies, cfg.report.player_moments),
-        winning_shots=winning_shots(pid, team, points, last_shot, rallies),
+        highlights=player_moments(pid, shots, points, last_shot, rallies, cfg.report.player_moments),
+        winning_shots=winning_shots(pid, points, last_shot, rallies),
         **shot_stats(mine, cfg),
     )
 
@@ -156,39 +186,45 @@ def shot_stats(mine: list[ShotInfo], cfg: EngineConfig) -> dict:
 
 
 def winning_shots(
-    pid: str, team: str, points: list[PointInfo], last_shot: dict[int, ShotInfo], rallies: dict[int, dict]
+    pid: str, points: list[PointInfo], last_shot: dict[int, ShotInfo], rallies: dict[int, dict]
 ) -> list[PlayerMoment]:
     """Every point the player finished with a winner: the build-up and the finish."""
     found = []
     for p in points:
         s = last_shot.get(p.rally)
         rally = rallies.get(p.rally)
-        if p.ending == "winner" and p.won_by == team and s is not None and s.player == pid and rally is not None:
+        won = p.won_by is not None and p.won_by == team_of(pid, p)
+        if p.ending == "winner" and won and s is not None and s.player == pid and rally is not None:
             found.append(_moment(s, "winner", 3.0 + float(rally.get("score", 0.0)),
                                  max(rally["start_s"] - 1.0, s.time_s - 8.0), s.time_s + 3.0))
     return found
 
 
 def _team(
-    team: str, members: list[str], shots: list[ShotInfo], points: list[PointInfo], people: Players,
-    spans: list[tuple[float, float]],
+    pair: str, played: list[tuple[PointInfo, str]], shots: list[ShotInfo], people: Players, rallies: dict[int, dict],
 ) -> TeamReport:
+    members = pair.split("+")
     counts = Counter()
-    for a, b in spans:
-        for t in np.arange(a, b, 0.2):
-            zones = sorted(court.zone_of(float(p.xy[1])) for p in people.at(float(t)) if p.team == team)
+    for p, _ in played:
+        for t in np.arange(p.start_s, p.end_s, 0.2):
+            zones = sorted(court.zone_of(float(x.xy[1])) for x in people.at(float(t)) if x.player in members)
             if len(zones) == 2:
                 counts[_formation(zones)] += 1
     total = sum(counts.values())
-    from_back = [s for s in shots if s.team == team and s.zone in ("mid", "back") and s.number > 2]
+    side = {p.rally: team for p, team in played}
+    from_back = [
+        s for s in shots if side.get(s.rally) == s.team and s.zone in ("mid", "back") and s.number > 2
+    ]
     return TeamReport(
-        team=team,
+        team=pair,
         players=members,
-        points_won=sum(p.won_by == team for p in points),
-        winners=sum(p.ending == "winner" and p.last_team == team for p in points),
-        errors=sum(p.ending == "error" and p.last_team == team for p in points),
+        points=len(played),
+        points_won=sum(p.won_by == team for p, team in played),
+        winners=sum(p.ending == "winner" and p.last_team == team for p, team in played),
+        errors=sum(p.ending == "error" and p.last_team == team for p, team in played),
         formation={f: round(counts[f] / total, 3) if total else 0.0 for f in FORMATIONS},
         lob_share=round(sum(s.kind == "lob" for s in from_back) / len(from_back), 3) if from_back else 0.0,
+        opponents=sorted({o for p, team in played for o in p.teams.get(OTHER_TEAM[team], [])}, key=player_number),
     )
 
 
@@ -211,15 +247,14 @@ def in_spans(t: np.ndarray, spans: list[tuple[float, float]]) -> np.ndarray:
 
 def player_moments(
     pid: str,
-    team: str,
     shots: list[ShotInfo],
     points: list[PointInfo],
     last_shot: dict[int, ShotInfo],
     rallies: dict[int, dict],
     limit: int,
 ) -> list[PlayerMoment]:
-    """A player's best moments: winners, overheads, long points their team won."""
-    won = {p.rally: p for p in points if p.won_by == team}
+    """A player's best moments: winners, overheads, long points their side won."""
+    won = {p.rally: p for p in points if p.won_by is not None and p.won_by == team_of(pid, p)}
     found: list[PlayerMoment] = []
     for s in shots:
         rally = rallies.get(s.rally)
@@ -310,7 +345,7 @@ def tips(report: MatchReport, players: dict[str, PlayerReport], cfg: EngineConfi
                 f"{names} played split, one at the net and one at the back, for {split:.0%} of point time. "
                 "Move up and back together so the gap through the middle stays closed."
             )))
-        others = [players[pid] for t in report.teams if t.team != team.team for pid in t.players if pid in players]
+        others = [players[pid] for pid in team.opponents if pid in players]
         their_net = float(np.mean([o.zone_share.get("net", 0.0) for o in others])) if others else 0.0
         back_shots = sum(players[pid].shots for pid in team.players if pid in players)
         if team.lob_share < 0.08 and their_net > 0.45 and back_shots >= 10:
@@ -348,9 +383,7 @@ def to_markdown(report: MatchReport, names: dict[str, str] | None = None) -> str
         return f"{names[pid]} ({pid})" if pid in names else pid
 
     def name_all(text: str) -> str:
-        for pid, name in names.items():
-            text = text.replace(pid, name)
-        return text
+        return re.sub(r"\bP\d+\b", lambda m: names.get(m.group(), m.group()), text)
 
     m, s = divmod(int(report.duration_s), 60)
     lines = [
@@ -359,28 +392,28 @@ def to_markdown(report: MatchReport, names: dict[str, str] | None = None) -> str
         f"{m} min {s} s of video, {report.points} points, {report.shots} shots. A point lasted "
         f"{report.avg_point_s:.0f} s and {report.avg_shots_per_point:.0f} shots on average.",
         "",
-        "## Teams",
+        "## Pairs",
         "",
-        "| Team | Players | Points won | Winners | Errors | Both at net | Split | Both back | In between |",
+        "| Pair | Points | Won | Winners | Errors | Both at net | Split | Both back | In between |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for t in report.teams:
         f = t.formation
         lines.append(
-            f"| {t.team} | {', '.join(who(p) for p in t.players)} | {t.points_won} | {t.winners} | {t.errors} | "
+            f"| {' and '.join(who(p) for p in t.players)} | {t.points} | {t.points_won} | {t.winners} | {t.errors} | "
             f"{f['both_net']:.0%} | {f['split']:.0%} | {f['both_back']:.0%} | {f['other']:.0%} |"
         )
     lines += [
         "",
         "## Players",
         "",
-        "| Player | Shots | Winners | Errors | At the net | Metres per point | Top speed |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Player | Points | Won | Shots | Winners | Errors | At the net | Metres per point | Top speed |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for p in report.players:
         lines.append(
-            f"| {who(p.player)} | {p.shots} | {p.winners} | {p.errors} | {p.zone_share.get('net', 0):.0%} | "
-            f"{p.distance_per_point_m:.0f} | {p.top_speed_mps * 3.6:.1f} km/h |"
+            f"| {who(p.player)} | {p.points} | {p.points_won} | {p.shots} | {p.winners} | {p.errors} | "
+            f"{p.zone_share.get('net', 0):.0%} | {p.distance_per_point_m:.0f} | {p.top_speed_mps * 3.6:.1f} km/h |"
         )
     for p in report.players:
         if not p.shot_stats:

@@ -1,12 +1,14 @@
 """End-to-end player tracking for one match video.
 
 This is the single entry point the CLI, the API workers and any future app
-call. It reads the video, finds the four players in court coordinates and
-writes everything to one run folder:
+call. It reads the video, follows the people on court in court coordinates,
+works out who is who (any number of people, see identity.py) and writes
+everything to one run folder:
 
     calibration_check.jpg   court model drawn over a frame (verify the fit)
-    tracks.csv              one row per player per analysed frame
+    tracks.csv              one row per person followed per analysed frame
     segments.json           each piece of track and its colours, to re-decide who is who
+    detections.npz          everyone the detector saw, to track again without it (output.detections)
     summary.json            per-player movement stats (schemas.TrackingSummary)
     overlay.json            court lines and smoothed player positions for the app
     heatmaps/P1.png ...     top-down occupancy per player, plus all.png
@@ -18,21 +20,19 @@ from __future__ import annotations
 import csv
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from . import __version__, analytics, files, render
+from . import __version__, analytics, court, files, render, seen
 from .calibration import Calibration
 from .config import EngineConfig
 from .detection import PersonTracker, YoloPersonTracker, detect_batch
-from .players import (
-    PLAYER_IDS, TEAM_OF, Candidate, PlayerAssigner, Segment, appearance_of, load_segments, repair_identities,
-    save_segments,
-)
+from .identity import OTHERS, group_people
+from .players import Candidate, PlayerAssigner, Segment, appearance_of, load_segments, save_segments
 from .schemas import CalibrationMeta, PlayerStats, TrackingSummary, VideoMeta
 from .tags import Resolved, Tag, resolve
 from .video import batched, iter_frames, make_browser_friendly, prefetch, probe, stride_for
@@ -56,13 +56,16 @@ def run_tracking(
     tags: list[Tag] | None = None,
     on_chunk: ChunkFn | None = None,
     smooth_cache: analytics.SmoothCache | None = None,
+    detections: str | Path | None = None,
 ) -> TrackingSummary:
-    """Track the four players through the video; ``tags`` name them and fix who is who where they land.
+    """Follow the players through the video; ``tags`` name them and settle who is who where they land.
 
     With ``on_chunk``, the stats, heatmaps and overlay so far are written
     after every ``live.every_s`` seconds of video, with who is who as it
     stands then, and ``on_chunk(seconds tracked, rows so far)`` is called.
     ``smooth_cache`` keeps the smoothing of stretches that have not changed.
+    ``detections`` (a detections.npz from an earlier run of this video)
+    replays the people found then instead of running the detector.
     """
     cfg = config or EngineConfig()
     out = Path(out_dir)
@@ -74,9 +77,23 @@ def run_tracking(
     fps = info.fps / stride
     total = max(1, math.ceil(info.frame_count / stride))
 
-    tracker = tracker or YoloPersonTracker(cfg.detector)
     assigner = PlayerAssigner(cfg.tracking)
     outputs: dict[str, str] = {"tracks": "tracks.csv", "summary": "summary.json", "segments": "segments.json"}
+    log = None
+    if detections is not None:
+        made_at = seen.fps_of(detections)
+        if not math.isclose(made_at, fps, rel_tol=1e-6):
+            raise ValueError(f"{detections} was made at {made_at:g} frames per second, not {fps:g}")
+        people = seen.replay(detections)
+        if (out / "calibration_check.jpg").exists():
+            outputs["calibration_check"] = "calibration_check.jpg"
+    else:
+        def check_calibration(frame: np.ndarray) -> None:
+            cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
+            outputs["calibration_check"] = "calibration_check.jpg"
+
+        people = _detect(video_path, tracker or YoloPersonTracker(cfg.detector), cfg, stride, check_calibration)
+        log = seen.DetectionLog(fps) if cfg.output.detections else None
 
     preview = cfg.output.preview_video
     share = 0.8 if preview else 1.0  # of the progress bar; the preview is drawn in a second pass
@@ -89,59 +106,45 @@ def run_tracking(
     )
     due = cfg.live.every_s  # the next publish, in seconds of video
 
-    # The detector sees each frame shrunk to its inference size, done ahead in
-    # a background thread; shirt colours come from the full-size frame.
-    frames = prefetch(
-        ((i, t, f, _shrink(f, cfg.detector.image_size)) for i, t, f in iter_frames(video_path, stride)),
-        cfg.tracking.prefetch_frames,
-    )
-    for batch in batched(frames, cfg.detector.batch):
-        for (frame_idx, t, frame, small), found in zip(batch, detect_batch(tracker, [b[3] for b in batch])):
-            if analysed == 0:
-                cv2.imwrite(str(out / "calibration_check.jpg"), render.draw_court_on_frame(frame, calib))
-                outputs["calibration_check"] = "calibration_check.jpg"
+    for frame_idx, t, detections, colours in people:
+        if log is not None:
+            log.add(frame_idx, t, detections, colours)
+        court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
+        candidates = [Candidate(d, xy, colour) for d, xy, colour in zip(detections, court_xy, colours)]
+        assigned = assigner.assign(t, candidates)
 
-            detections = found
-            if small is not frame:
-                sx, sy = frame.shape[1] / small.shape[1], frame.shape[0] / small.shape[0]
-                detections = [
-                    replace(d, bbox=(d.bbox[0] * sx, d.bbox[1] * sy, d.bbox[2] * sx, d.bbox[3] * sy)) for d in found
-                ]
-            court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
-            candidates = [
-                Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
-            ]
-            assigned = assigner.assign(t, candidates)
+        for pid, i in sorted(assigned.items()):
+            c = candidates[i]
+            row = {
+                "frame": frame_idx,
+                "time_s": round(t, 3),
+                "player": pid,
+                "team": court.team_at(float(c.court_xy[1])),
+                "track_id": c.detection.track_id if c.detection.track_id is not None else "",
+                "confidence": round(c.detection.confidence, 3),
+                **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
+                "court_x": round(float(c.court_xy[0]), 3),
+                "court_y": round(float(c.court_xy[1]), 3),
+                "segment": assigner.slots[pid].segment,
+            }
+            rows.append(row)
+        if preview:
+            taken = set(assigned.values())
+            others.append([d.bbox for j, d in enumerate(detections) if j not in taken])
 
-            for pid, i in sorted(assigned.items()):
-                c = candidates[i]
-                row = {
-                    "frame": frame_idx,
-                    "time_s": round(t, 3),
-                    "player": pid,
-                    "team": TEAM_OF[pid],
-                    "track_id": c.detection.track_id if c.detection.track_id is not None else "",
-                    "confidence": round(c.detection.confidence, 3),
-                    **dict(zip(("x1", "y1", "x2", "y2"), (round(v, 1) for v in c.detection.bbox))),
-                    "court_x": round(float(c.court_xy[0]), 3),
-                    "court_y": round(float(c.court_xy[1]), 3),
-                    "segment": assigner.slots[pid].segment,
-                }
-                rows.append(row)
-            if preview:
-                taken = set(assigned.values())
-                others.append([d.bbox for j, d in enumerate(detections) if j not in taken])
-
-            analysed += 1
-            if on_progress and analysed % 25 == 0:
-                on_progress(min(share * analysed / total, 0.99))
-        if on_chunk is not None and analysed and t >= due:
+        analysed += 1
+        if on_progress and analysed % 25 == 0:
+            on_progress(min(share * analysed / total, 0.99))
+        if on_chunk is not None and t >= due:
             found = label_rows(rows, assigner.segments, tags or [], cfg)
             _summarise(out, rows, analysed, fps, calib, video, cfg, dict(outputs), found, smooth_cache)
             on_chunk(t, rows)
             due = (math.floor(t / cfg.live.every_s) + 1) * cfg.live.every_s
 
-    # Who is who is only settled once the repair has seen the whole match, so
+    if log is not None:
+        log.save(out / "detections.npz")
+        outputs["detections"] = "detections.npz"
+    # Who is who is only settled once the whole match has been seen, so
     # every output is written from here on.
     save_segments(out / "segments.json", assigner.segments)
     found = label_rows(rows, assigner.segments, tags or [], cfg)
@@ -185,22 +188,29 @@ def relabel(
 
 
 def label_rows(rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: EngineConfig) -> Resolved:
-    """Give every row the player its segment turned out to be, tags included, and sort the rows."""
-    labels = repair_identities(segments, cfg.tracking)
-    found = Resolved({}, {}, [])
-    if tags:
-        found = resolve(tags, rows, labels)
-        if found.pins:
-            labels = repair_identities(segments, cfg.tracking, found.pins)
-            # Tags that contradict each other, or the tracking where it has no
-            # break to swap at, cannot all hold; those are reported.
-            missed = [found.pin_tags[i] for i, p in found.pins.items() if labels[i] != p]
-            found.unmatched = sorted(found.unmatched + missed)
+    """Give every row the person its segment turned out to be, tags included, and sort the rows.
+
+    Rows of anyone who is not a player are labelled ``identity.OTHERS``.
+    """
+    found = resolve(tags, rows) if tags else Resolved({})
+    people = group_people(segments, cfg.tracking, found.pins)
+    # A name on two people at once cannot hold; those tags are reported.
+    found.unmatched = sorted(found.unmatched + [found.pin_tags[i] for i in people.dropped])
+    found.names = people.names
     for row in rows:
-        row["player"] = labels[row["segment"]]
-        row["team"] = TEAM_OF[row["player"]]
-    rows.sort(key=lambda r: (r["frame"], r["player"]))
+        row["player"] = people.labels[row["segment"]]
+        row["team"] = court.team_at(row["court_y"])
+    rows.sort(key=lambda r: (r["frame"], _number(r["player"])))
     return found
+
+
+def players_in(rows: list[dict]) -> list[str]:
+    """The players in labelled rows, P1 first."""
+    return sorted({r["player"] for r in rows} - {OTHERS}, key=_number)
+
+
+def _number(pid: str) -> int:
+    return int(pid[1:]) if pid[1:].isdigit() else 1_000_000
 
 
 def write_tracks(path: Path, rows: list[dict]) -> None:
@@ -260,6 +270,35 @@ def _shrink(frame: np.ndarray, image_size: int) -> np.ndarray:
     return cv2.resize(frame, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
 
 
+def _detect(
+    video_path: str | Path,
+    tracker: PersonTracker,
+    cfg: EngineConfig,
+    stride: int,
+    on_first: Callable[[np.ndarray], None],
+) -> Iterator[seen.Seen]:
+    """Each analysed frame's people and their shirt colours, from the detector; ``on_first(frame)`` sees the first."""
+    # The detector sees each frame shrunk to its inference size, done ahead in
+    # a background thread; shirt colours come from the full-size frame.
+    frames = prefetch(
+        ((i, t, f, _shrink(f, cfg.detector.image_size)) for i, t, f in iter_frames(video_path, stride)),
+        cfg.tracking.prefetch_frames,
+    )
+    first = True
+    for batch in batched(frames, cfg.detector.batch):
+        for (frame_idx, t, frame, small), found in zip(batch, detect_batch(tracker, [b[3] for b in batch])):
+            if first:
+                on_first(frame)
+                first = False
+            detections = found
+            if small is not frame:
+                sx, sy = frame.shape[1] / small.shape[1], frame.shape[0] / small.shape[0]
+                detections = [
+                    replace(d, bbox=(d.bbox[0] * sx, d.bbox[1] * sy, d.bbox[2] * sx, d.bbox[3] * sy)) for d in found
+                ]
+            yield frame_idx, t, detections, [appearance_of(frame, d.bbox) for d in detections]
+
+
 def _write_preview(
     video_path: str | Path,
     stride: int,
@@ -269,7 +308,7 @@ def _write_preview(
     path: Path,
     on_progress: ProgressFn | None,
 ) -> None:
-    """Boxes and a minimap burnt into the video, drawn after the repair so the numbers match tracks.csv."""
+    """Boxes and a minimap burnt into the video, drawn once people are grouped, so the numbers match tracks.csv."""
     minimap = render.TopDown(px_per_m=24)
     writer = None
     j = 0  # rows are in frame order
@@ -280,12 +319,16 @@ def _write_preview(
             writer = cv2.VideoWriter(
                 str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (frame.shape[1], frame.shape[0])
             )
-        players = {}
+        players, unknown = {}, list(others[k])
         while j < len(rows) and rows[j]["frame"] == frame_idx:
             r = rows[j]
-            players[r["player"]] = ((r["x1"], r["y1"], r["x2"], r["y2"]), np.array([r["court_x"], r["court_y"]]))
+            box = (r["x1"], r["y1"], r["x2"], r["y2"])
+            if r["player"] == OTHERS:
+                unknown.append(box)
+            else:
+                players[r["player"]] = (box, np.array([r["court_x"], r["court_y"]]))
             j += 1
-        writer.write(render.annotate_frame(frame, players, others[k], minimap, t))
+        writer.write(render.annotate_frame(frame, players, unknown, minimap, t))
         if on_progress and (k + 1) % 25 == 0:
             on_progress((k + 1) / len(others))
     if writer is not None:
@@ -302,8 +345,11 @@ def _player_stats(
     all_xy = []
     stats = []
     smoothed = {}
-    for pid in PLAYER_IDS:
-        mine = [r for r in rows if r["player"] == pid]
+    by_player: dict[str, list[dict]] = {pid: [] for pid in players_in(rows)}
+    for r in rows:
+        if r["player"] in by_player:
+            by_player[r["player"]].append(r)
+    for pid, mine in by_player.items():
         traj = analytics.Trajectory(
             t=np.array([r["time_s"] for r in mine], dtype=np.float64),
             xy=np.array([(r["court_x"], r["court_y"]) for r in mine], dtype=np.float64).reshape(-1, 2),
@@ -313,7 +359,7 @@ def _player_stats(
         feet = np.array([((r["x1"] + r["x2"]) / 2, r["y2"]) for r in mine], dtype=np.float64).reshape(-1, 2)
         J = calib.jacobian(feet)
         meas_cov = cfg.analytics.foot_pixel_noise**2 * J @ J.transpose(0, 2, 1)
-        smooth = analytics.smooth(traj, cfg.analytics, meas_cov, cache)
+        smooth = analytics.smooth(traj, cfg.analytics, meas_cov, cache, cfg.tracking.max_speed_mps)
         smoothed[pid] = smooth
         move = analytics.movement(smooth, cfg.analytics, cfg.tracking.max_speed_mps)
         all_xy.append(smooth.xy)
@@ -327,7 +373,6 @@ def _player_stats(
         stats.append(
             PlayerStats(
                 player=pid,
-                team=TEAM_OF[pid],
                 seen_fraction=len(mine) / analysed if analysed else 0.0,
                 zone_share=analytics.zone_share(smooth.xy),
                 side_share=analytics.side_share(smooth.xy),
@@ -363,13 +408,12 @@ def _write_overlay(
     for pid, traj in smoothed.items():
         mine = [r for r in rows if r["player"] == pid]
         players[pid] = {
-            "team": TEAM_OF[pid],
             "t": [round(float(t), 2) for t in traj.t],
             "box": [round(r[k]) for r in mine for k in ("x1", "y1", "x2", "y2")],
             "xy": [round(float(v), 2) for v in traj.xy.reshape(-1)],
         }
     data = {
-        "version": 1,
+        "version": 2,  # 2: any number of players, and no fixed team (it is wherever they stand)
         "size": list(calib.image_size),
         "fps": round(fps, 3),
         "court_to_image": calib.H_inv.tolist(),

@@ -8,14 +8,19 @@ import numpy as np
 from . import court
 from .calibration import Calibration
 
-# BGR. Team A in blues, team B in warm colours.
-PLAYER_COLORS = {
-    "P1": (235, 140, 30),
-    "P2": (230, 220, 40),
-    "P3": (40, 140, 245),
-    "P4": (60, 60, 230),
-}
+# BGR, one per player in turn (P1, P2, ...), the same as the app's.
+PLAYER_COLORS = [
+    (235, 140, 30), (230, 220, 40), (40, 140, 245), (60, 60, 230), (90, 200, 80),
+    (200, 80, 200), (40, 210, 240), (160, 90, 120), (150, 150, 20), (150, 120, 245),
+]
+OTHER_COLOR = (128, 128, 128)
 LINE_COLOR = (255, 255, 255)
+
+
+def player_color(pid: str) -> tuple[int, int, int]:
+    n = pid[1:]
+    return PLAYER_COLORS[(int(n) - 1) % len(PLAYER_COLORS)] if n.isdigit() and int(n) > 0 else OTHER_COLOR
+
 NET_COLOR = (200, 200, 200)
 FLOOR_COLOR = (120, 90, 40)
 
@@ -112,21 +117,21 @@ def annotate_frame(
     """Boxes and labels on the frame plus a live top-down minimap.
 
     ``players`` maps player id -> (bbox, court_xy); ``others`` are people who
-    were detected but are not one of the four players (spectators, other courts).
+    were detected but are not players (spectators, other courts).
     """
     out = frame.copy()
     for x1, y1, x2, y2 in others:
         cv2.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)), (128, 128, 128), 1)
     for pid, ((x1, y1, x2, y2), _) in players.items():
-        c = PLAYER_COLORS[pid]
+        c = player_color(pid)
         cv2.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)), c, 2)
         cv2.putText(out, pid, (int(x1), int(y1) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c, 2, cv2.LINE_AA)
 
     mm = minimap.blank()
     for pid, (_, xy) in players.items():
         u, v = minimap.to_px(xy)[0].round().astype(int)
-        cv2.circle(mm, (u, v), 7, PLAYER_COLORS[pid], -1, cv2.LINE_AA)
-        cv2.putText(mm, pid[1], (u - 4, v + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.circle(mm, (u, v), 7, player_color(pid), -1, cv2.LINE_AA)
+        cv2.putText(mm, pid[1:], (u - 4 * len(pid[1:]), v + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
 
     H, W = out.shape[:2]
     scale = min(0.32 * H / mm.shape[0], 1.0)

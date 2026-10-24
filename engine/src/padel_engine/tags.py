@@ -1,11 +1,10 @@
 """Tags: someone names a player by pointing at them in the video.
 
 A tag says "at this moment, the person at this spot is Maya". It is found
-on the tracked box under that spot, which belongs to one piece of a
-player's track (see ``players.Segment``). Each name is given the player
-number that already covers most of its tags, so naming rarely renumbers
-anyone, and every tagged piece is then pinned to its name's number for the
-identity repair. Tagging the same stretch again with another name replaces
+on the tracked box under that spot, which belongs to one piece of someone's
+track (see ``players.Segment``), and pins that piece to the name: pieces
+with one name are one person, and pieces with different names two (see
+``identity.py``). Tagging the same piece again with another name replaces
 the earlier tag, which is then reported as not applied.
 """
 
@@ -13,11 +12,6 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field
-
-import numpy as np
-from scipy.optimize import linear_sum_assignment
-
-from .players import PLAYER_IDS
 
 SEARCH_S = 0.3  # how far from the tag's moment to look for the box under it
 EDGE = 0.05  # a click this close outside a box (share of its size) still counts
@@ -37,9 +31,9 @@ class Tag:
 
 @dataclass
 class Resolved:
-    pins: dict[int, str]  # segment index -> player
-    names: dict[str, str]  # player -> name
-    unmatched: list[int]  # tags not applied: no tracked player under them, a fifth name, or impossible
+    pins: dict[int, str]  # segment index -> name, in the order the tags were given
+    names: dict[str, str] = field(default_factory=dict)  # player -> name, once people are grouped
+    unmatched: list[int] = field(default_factory=list)  # tags not applied: nobody tracked under them, or impossible
     pin_tags: dict[int, int] = field(default_factory=dict)  # segment index -> the tag that pinned it
 
 
@@ -63,8 +57,8 @@ def find_segment(tag: Tag, rows: list[dict], times: list[float]) -> int | None:
     return None if best is None else best[2]
 
 
-def resolve(tags: list[Tag], rows: list[dict], labels: list[str]) -> Resolved:
-    """Pins and player names from ``tags``, given who each segment is without them (``labels``)."""
+def resolve(tags: list[Tag], rows: list[dict]) -> Resolved:
+    """The track piece each of ``tags`` is on, and its name."""
     rows = sorted(rows, key=lambda r: r["time_s"])
     times = [r["time_s"] for r in rows]
     named: dict[int, tuple[str, int]] = {}  # segment -> (name, tag index); a later tag replaces an earlier one
@@ -77,24 +71,53 @@ def resolve(tags: list[Tag], rows: list[dict], labels: list[str]) -> Resolved:
         if seg in named and named[seg][0] != tag.name:
             unmatched.append(named[seg][1])
         named[seg] = (tag.name, k)
+    order = sorted(named.items(), key=lambda item: item[1][1])
+    return Resolved(
+        {seg: name for seg, (name, _) in order}, unmatched=sorted(unmatched), pin_tags={seg: k for seg, (_, k) in order}
+    )
 
-    names = list(dict.fromkeys(name for name, _ in sorted(named.values(), key=lambda v: v[1])))
-    slot_of: dict[str, str] = {}
-    if names:
-        # Each name takes the number most of its tags already show, four names
-        # at most; where two names want one number, the first named keeps it.
-        cost = np.zeros((len(names), len(PLAYER_IDS)))
-        for seg, (name, _) in named.items():
-            i = names.index(name)
-            move = 1.0 - 1e-6 * i
-            cost[i] += move
-            cost[i, PLAYER_IDS.index(labels[seg])] -= move
-        rows_, cols = linear_sum_assignment(cost)
-        slot_of = {names[r]: PLAYER_IDS[c] for r, c in zip(rows_, cols)}
-    pins, pin_tags = {}, {}
-    for seg, (name, k) in named.items():
-        if name in slot_of:
-            pins[seg], pin_tags[seg] = slot_of[name], k
-        else:
-            unmatched.append(k)
-    return Resolved(pins, {pid: name for name, pid in slot_of.items()}, sorted(unmatched), pin_tags)
+
+def spot_for(rows: list[dict], player: str) -> Tag | None:
+    """Where to tag ``player`` to name them: the middle of their longest piece of track, on their chest.
+
+    Only moments where nobody else's box touches theirs count, so the tag
+    cannot land on someone else. The name is left empty for the caller.
+    """
+    frames: dict[int, list[dict]] = {}
+    for r in rows:
+        frames.setdefault(r["frame"], []).append(r)
+    pieces: dict[int, list[dict]] = {}
+    for r in rows:
+        if r["player"] != player:
+            continue
+        x1, y1, x2, y2 = r["x1"], r["y1"], r["x2"], r["y2"]
+        clear = all(
+            o is r or o["x2"] <= x1 or o["x1"] >= x2 or o["y2"] <= y1 or o["y1"] >= y2 for o in frames[r["frame"]]
+        )
+        if clear:
+            pieces.setdefault(r["segment"], []).append(r)
+    if not pieces:
+        return None
+    longest = max(pieces.values(), key=len)
+    r = sorted(longest, key=lambda r: r["time_s"])[len(longest) // 2]
+    return Tag(r["time_s"], (r["x1"] + r["x2"]) / 2, r["y1"] + 0.35 * (r["y2"] - r["y1"]), "")
+
+
+def overlay_rows(overlay: dict, max_gap_s: float = 0.5) -> list[dict]:
+    """Rows like tracks.csv's from overlay.json, which is written while a match is still being analysed.
+
+    Enough for ``spot_for``: each player's track is cut into pieces at gaps.
+    """
+    rows = []
+    fps = float(overlay.get("fps") or 10.0)
+    piece = 0
+    for pid, p in overlay.get("players", {}).items():
+        last = None
+        for i, t in enumerate(p["t"]):
+            if last is None or t - last > max_gap_s:
+                piece += 1
+            last = t
+            x1, y1, x2, y2 = p["box"][4 * i : 4 * i + 4]
+            rows.append({"frame": round(t * fps), "time_s": t, "player": pid, "segment": piece,
+                         "x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    return rows

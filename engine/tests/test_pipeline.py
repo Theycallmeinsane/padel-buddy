@@ -105,6 +105,28 @@ def test_smoothing_removes_far_side_jitter():
     assert abs(smooth_d - true_d) < 0.25 * abs(raw_d - true_d)
 
 
+def test_top_speed_is_the_fastest_a_player_holds_for_a_second():
+    """A few sprints in a match of walking set it; one glitch or a number hopping to someone else does not."""
+    rng = np.random.default_rng(3)
+    t = np.arange(0, 1200, 0.1)
+    v = np.full_like(t, 0.8)
+    for start in rng.uniform(20, 1180, 12):  # twelve sprints at 5 m/s, held for about a second
+        d = t - start
+        v = np.where((d >= 0) & (d < 1.2), 5.0, v)
+    angle = np.cumsum(v) * 0.1 / 3.0  # round a 3 m circle, so the player stays on court
+    xy = np.column_stack([5 + 3 * np.cos(angle), 5 + 3 * np.sin(angle)]) + rng.normal(0, 0.05, (len(t), 2))
+    xy[6000] += [0.6, 0]  # one glitch
+    xy[9000:9030] += [0, 6.0]  # three seconds on someone 6 m away
+    cfg = AnalyticsConfig()
+    cov = np.broadcast_to(np.eye(2) * 0.05**2, (len(t), 2, 2))
+    s = analytics.smooth(analytics.Trajectory(t, xy), cfg, cov, max_speed_mps=8.0)
+    move = analytics.movement(s, cfg, 8.0)
+    assert 4.5 < move["top_speed_mps"] < 5.3
+    assert move["avg_speed_mps"] < 1.2
+    # The hop is not smoothed into a run there and back.
+    assert np.abs(np.diff(s.xy[8990:9040], axis=0)).max() > 5.0
+
+
 class ShrinkAware:
     """The scripted tracker as a real detector sees it: boxes in the pixels of the frame it was given."""
 
@@ -158,6 +180,39 @@ def test_shrunk_batched_frames_give_the_same_tracks(tmp_path):
         assert (a["frame"], a["player"], a["track_id"]) == (b["frame"], b["player"], b["track_id"])
         for k in ("x1", "y1", "x2", "y2", "court_x", "court_y"):
             assert float(a[k]) == pytest.approx(float(b[k]), abs=0.11), k
+
+
+def test_tracking_again_from_saved_detections_writes_the_same_tracks(tmp_path):
+    """detections.npz holds what the detector saw, so the match can be tracked again without it."""
+    cam = Camera()
+    gt = paths(8.0, SRC_FPS)
+    video = tmp_path / "match.mp4"
+    make_video(video, cam, gt)
+    calib = Calibration.from_points(
+        {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
+         ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
+        (W, H),
+    )
+    cfg = EngineConfig()
+    stride = round(SRC_FPS / cfg.tracking.process_fps)
+    first = run_tracking(video, calib, tmp_path / "first", cfg, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    saved = tmp_path / "first" / "detections.npz"
+    assert first.outputs["detections"] == "detections.npz" and saved.exists()
+
+    again = run_tracking(video, calib, tmp_path / "again", cfg, detections=saved)
+
+    for name in ["tracks.csv", "segments.json", "overlay.json"]:
+        assert (tmp_path / "again" / name).read_bytes() == (tmp_path / "first" / name).read_bytes(), name
+    assert again.players == first.players and again.analysed_frames == first.analysed_frames
+    assert not (tmp_path / "again" / "detections.npz").exists()
+
+    # Made at another frame rate, the frames would not line up.
+    with pytest.raises(ValueError, match="frames per second"):
+        run_tracking(video, calib, tmp_path / "other", EngineConfig.model_validate({"tracking": {"process_fps": 5}}),
+                     detections=saved)
+    off = EngineConfig.model_validate({"output": {"detections": False}})
+    run_tracking(video, calib, tmp_path / "none", off, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    assert not (tmp_path / "none" / "detections.npz").exists()
 
 
 def test_tags_name_players_and_fix_who_is_who_without_tracking_again(tmp_path):

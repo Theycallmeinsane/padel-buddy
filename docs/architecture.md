@@ -27,7 +27,8 @@ them one by one.
 | `court` | FIP court model in metres: keypoints, lines, depth zones |
 | `calibration` | Image ↔ court homography from clicked keypoints |
 | `detection` | `PersonTracker` interface; YOLO + ByteTrack implementation |
-| `players` | Four stable player ids from noisy detections, and the repair that fixes swaps after the match is tracked |
+| `players` | Follows up to four people on court from noisy detections, and cuts their tracks into pieces where they may have been lost or swapped |
+| `identity` | Groups the pieces into people after the match, any number of them (people rotate in): colours, continuity and name tags |
 | `tags` | Names someone gave by clicking a player: which track piece each lands on, and which number each name takes |
 | `analytics` | Kalman smoothing, distance, speed, zones, heatmaps |
 | `render` | Calibration overlay, annotated preview, top-down court |
@@ -41,6 +42,7 @@ them one by one.
 | `shorts` | Vertical 9:16 clips of single points for phones, keeping the whole court in view |
 | `live` | Publishes results while a match is analysed: points first, then stats, ball, shots and report every few minutes |
 | `files` | Writes each output beside its name and moves it over in one step, so readers never see half a file |
+| `seen` | Saves everyone the detector saw (`detections.npz`) and replays it, to track a match again without the GPU |
 | `coach` | Optional written summary of the report's numbers from the Claude API |
 | `schemas` | Pydantic output models, the contract the API will serve |
 
@@ -65,6 +67,10 @@ Design choices:
   `summary.json`, images, preview). Locally that is a directory; in the
   cloud the worker uploads the same folder to storage. With live results the
   folder fills while the match is analysed, and `live.json` says how far.
+- **Detect once.** Finding people is most of tracking's time. The run
+  keeps what the detector saw (`detections.npz`), so a change to who-is-who
+  logic, settings or the calibration tracks the match again in minutes,
+  with exactly the same people as input.
 
 ## API (`api/`)
 
@@ -95,7 +101,7 @@ gallery, player table and heatmaps. Being static, the same build can be wrapped 
    report with tips and an optional coach's summary, and each player's own
    highlights and numbers, followed across matches by name. Players are
    named by clicking them on the video; a tag after a tracking mix-up
-   re-runs only the identity repair, shots and report.
+   re-runs only who is who, shots and report.
 5. **Pose.** Forehand and backhand, technique notes, and a trained ball
    detector, once real footage is available to train and tune on.
 

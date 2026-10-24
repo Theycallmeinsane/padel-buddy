@@ -20,12 +20,11 @@ class CalibrationMeta(BaseModel):
 
 
 class PlayerStats(BaseModel):
-    player: str  # P1..P4
-    team: str  # A (started on the camera side) or B
+    player: str  # P1, P2, ... in the order they first appeared
     seen_fraction: float  # share of analysed frames the player was located in
     distance_m: float
     avg_speed_mps: float
-    top_speed_mps: float  # 95th percentile, robust to tracking jitter
+    top_speed_mps: float  # fastest held for a second (99.9th percentile of 1 s averages)
     zone_share: dict[str, float]  # net / mid / back, fractions of time seen
     side_share: dict[str, float]  # left / right half of their own court, from the player's view
     heatmap: str | None = None  # relative path inside the run folder
@@ -40,7 +39,7 @@ class TrackingSummary(BaseModel):
     players: list[PlayerStats]
     outputs: dict[str, str]  # name -> relative path inside the run folder
     names: dict[str, str] = {}  # player -> name, from tags
-    unmatched_tags: list[int] = []  # tags (by position) with no tracked player under them
+    unmatched_tags: list[int] = []  # tags (by position) with nobody tracked under them, or that cannot hold
 
 
 class RallyInfo(BaseModel):
@@ -105,7 +104,7 @@ class ShotInfo(BaseModel):
     rally: int  # RallyInfo.index
     number: int  # 1 for the serve
     player: str | None  # None when only the team could be told
-    team: str | None
+    team: str | None  # the side the hitter played the point on: A the camera's, B the far one
     kind: str  # serve, return, volley, smash, vibora, bandeja, lob, flat, groundstroke, unknown
     zone: str | None  # hitter's depth zone: net / mid / back
     court_x: float | None  # hitter's position, metres
@@ -130,6 +129,7 @@ class PointInfo(BaseModel):
     ending: str
     detail: str | None  # for errors: "net" or "out"
     won_by: str | None  # team
+    teams: dict[str, list[str]] = {}  # who played the point on each side: A the camera's, B the far one
 
 
 class ShotsSummary(BaseModel):
@@ -165,7 +165,9 @@ class ShotStat(BaseModel):
 
 class PlayerReport(BaseModel):
     player: str
-    team: str
+    points: int = 0  # points they played
+    points_won: int = 0  # by their side
+    partners: dict[str, int] = {}  # partner -> points played together, most first
     shots: int
     shot_kinds: dict[str, int]
     winners: int
@@ -173,7 +175,7 @@ class PlayerReport(BaseModel):
     errors_by_kind: dict[str, int]  # the kind of shot that ended the point in an error
     # Movement during points only, so walking between points doesn't count
     distance_per_point_m: float
-    top_speed_mps: float  # 95th percentile during points
+    top_speed_mps: float  # fastest held for a second during points (as PlayerStats)
     zone_share: dict[str, float]  # net / mid / back, during points
     side_share: dict[str, float]
     highlights: list[PlayerMoment] = []
@@ -186,18 +188,22 @@ class PlayerReport(BaseModel):
 
 
 class TeamReport(BaseModel):
-    team: str
+    """A pair who played points together on one side of the net."""
+
+    team: str  # the pair, "P1+P3"
     players: list[str]
+    points: int = 0  # played together
     points_won: int
     winners: int
     errors: int
     # Share of point time with both players at the net, one up one back, both back
     formation: dict[str, float]
     lob_share: float  # of the team's shots from the back half that were lobs
+    opponents: list[str] = []  # everyone they played against
 
 
 class Tip(BaseModel):
-    who: str  # a player, a team ("A") or "match"
+    who: str  # a player ("P3"), a pair ("P1+P3") or "match"
     topic: str  # net, formation, errors, lob, movement
     text: str
 

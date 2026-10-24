@@ -30,8 +30,11 @@ pip install -e ".[coach]"
 # Once per camera position: click court keypoints on a frame.
 padel-engine calibrate match.mp4 --out calibration.json
 
-# Track the four players.
+# Follow the players (any number: people may rotate in).
 padel-engine track match.mp4 -c calibration.json --out runs/match1 --device cuda:0
+
+# Track again without the detector (new settings, code or calibration), from what it saw last time.
+padel-engine track match.mp4 -c calibration.json --out runs/again --detections runs/match1/detections.npz
 
 # Clips and highlights from the sound (add --tracks runs/match1/tracks.csv to use movement too).
 padel-engine clips match.mp4 --out runs/match1
@@ -67,7 +70,8 @@ Each run folder contains:
 | --- | --- |
 | `calibration_check.jpg` | The court model drawn over the first frame |
 | `tracks.csv` | One row per player per analysed frame: box, track id, track piece, court x/y in metres |
-| `segments.json` | Every piece of a player's track with its shirt colours, so names can be applied later without tracking again |
+| `segments.json` | Every piece of track with its colours, times and places, so who is who can be decided again (after a tag) without tracking again |
+| `detections.npz` | Everyone the detector saw in each analysed frame, with shirt colours (`output.detections`, tens of MB for a long match), so the match can be tracked again in minutes without the GPU |
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | With `track --preview` only: the video with player boxes and a minimap burnt in. The app's viewer draws the same live, so it is off by default |
@@ -88,9 +92,13 @@ Each run folder contains:
 | `shorts/point_012.mp4`, `shorts/P1_winner.mp4` … | Vertical 9:16 shorts for phones: the 5 best points, and each player's best winner |
 | `live.json` | With a calibration: how far the results published so far reach (`covered_s` of `duration_s`), and `done` once the run finished |
 
-Players are numbered by where they stand when first seen: **P1** near-left
-and **P2** near-right (team A, camera side at the start), **P3** far-left
-and **P4** far-right (team B). Ids follow the person through side switches.
+Players are numbered **P1, P2, ...** in the order they first appear (at
+the start, near-left first), however many there are: people may rotate in
+and swap partners. Anyone on court for only a few seconds in all (fetching
+a ball, a spectator by the door) is not a player, and their rows in
+`tracks.csv` say `X`. A **team** is whoever shares a half during a point:
+team A plays it on the camera's side of the net, team B on the far side,
+and each point in `shots.json` lists who was on each side.
 
 Court coordinates: `x` 0–10 m from the left wall to the right wall as seen
 from the camera, `y` 0–20 m from the near back wall to the far one, net at
@@ -105,13 +113,18 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    `1 / process_fps` seconds (10 fps by default). Frames are decoded and
    shrunk to the detector's size in a background thread, and sent to the GPU
    8 at a time in half precision; ByteTrack still sees them one by one.
-3. **Player assignment** projects each person's feet onto the court, merges
-   two boxes on one person, and keeps four stable player slots by matching on
+3. **Following people** projects each person's feet onto the court, merges
+   two boxes on one person, and keeps four live slots (one per person on
+   court) by matching on
    court position (gated by a maximum running speed), shirt colour, and the
    tracker's id. People watching stand just outside the glass, by the net
    posts and the side fences, so only someone inside the lines can become a
    player, a player is followed off court only while the tracker keeps the
-   same id, and one followed outside the lines for 4 s is let go.
+   same id (just past the lines, or out round a net post to change ends),
+   and one followed outside the lines for 4 s is let go. The
+   doorways by the net posts count as off court (0.6 m in from the side
+   lines, 1.5 m either side of the net): people waiting to play, fetching
+   balls or watching stand in them, often just inside the lines.
    When a player disappears (out of frame, behind another player, or just
    missed by the detector), nobody else's number changes and their own
    number waits for them; they simply have no box while they are gone. A
@@ -121,29 +134,43 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    colours agree, because it often hands a hidden player's id to whoever is
    in front of them. A player missing for a couple of seconds is re-found by
    shirt colour, and only by someone whose colours are close; that limit
-   relaxes over 30 s in case their look changed. Once the whole match is
-   tracked, a repair pass cuts each player's track wherever they vanished
-   for more than half a second, compares every piece's shirt colours with
-   each player's own (taken from long, clear views, starting with the first
-   ones), and gives any piece that belongs to someone else back to them,
-   never one number to two people at once. So if two players did get mixed
-   up live, it is put right when they come back.
+   relaxes over 30 s in case their look changed. Each slot's track is cut
+   into pieces wherever its person vanished for more than half a second or
+   jumped, where two people part after passing within a metre of each
+   other, since that is where a swap would happen, and where someone walks
+   round a net post to the other side, so each piece is seen from one side.
+   Only round a post (`tracking.net_round_across_m`): the net hides a far
+   player's feet as they come up to it, so they are often placed up to a
+   metre in front of it, and that is not a crossing.
 
-   Tracks are also cut where two players part after passing within a metre
-   of each other, since that is where a swap would happen. Without names
-   those cuts are joined back, so they change nothing.
+   **Who is who** is decided once the whole match is tracked
+   (`identity.py`), for any number of people. Pieces seen at the same moment
+   are different people. Pieces whose colours (shirt, shorts, legs) are
+   alike are the same person, the most alike first, until nobody left is
+   alike enough (`tracking.same_person_max_distance`); a piece that starts a
+   moment after another ended, a step away, or that continues a track cut
+   at a close pass, leans to being the same person. Colours are compared
+   side by side of the net: from the far side everyone looks smaller,
+   dimmer and is behind the net, so one person's near and far colours
+   differ more than two people's on one side, and pieces only ever seen
+   from opposite sides must look more alike (`tracking.cross_side_penalty`).
+   One person's near and far pieces come together where the tracker
+   followed them round the net with nobody close by: those pieces are the
+   same person. Short pieces that match
+   nobody well enough join the player they look most like. So a mix-up the
+   live pass made is put right by colour, someone who rotates in becomes a
+   new player, and someone who sat out gets their number back.
+
    **Names.** In the app you can point at a player at any moment and type
-   their name (a tag). The tag lands on the piece of track under the click,
-   each name takes the player number most of its tags already show (four
-   names at most), and the repair then keeps every tagged piece on that
-   number. The pieces after a tag lean towards its player until the next
-   contact, and shirt colours decide where a mix-up actually happened. So
-   one tag after a swap is enough to put the rest of the match right, and
-   the names show in every output. Naming again only re-runs the repair,
+   their name (a tag), or type names in the report. A tag pins the piece of
+   track under the click to that name: pieces with one name are one person
+   and pieces with different names are different people, so naming two
+   lookalikes tells them apart, and one tag after a swap at a close pass
+   puts the rest of the match right. Naming again only re-runs who is who,
    shots and report from `segments.json` and `tracks.csv`, which takes
-   seconds. A tag that can't hold (nobody tracked under it, a fifth name,
-   or it contradicts another tag on the same stretch) is listed in
-   `summary.json` as not applied.
+   seconds. A tag that can't hold (nobody tracked under it, or its name on
+   someone else at that same moment) is listed in `summary.json` as not
+   applied.
 4. **Analytics** smooths positions with a Kalman smoother that knows a
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones
@@ -202,12 +229,14 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    a winner. A last shot seen leaving that never lands on the other side is
    an error: "net" if it ends in the band around the net, otherwise "out".
    Anything else is left unknown rather than guessed.
-14. **Match report.** Per player: shots by kind, winners, errors (and which
-   shot they came from), time at the net, metres per point and top speed,
-   counting only time during points. Per team: points won and how often
-   both were at the net, split, or both back. Tips are simple rules on those
-   numbers (for example, a team that is split a lot is open through the
-   middle) and appear once there are at least 5 points.
+14. **Match report.** Per player: points played and won, who they played
+   with, shots by kind, winners, errors (and which shot they came from),
+   time at the net, metres per point and top speed, counting only time
+   during points. Per pair (two people who played at least 3 points
+   together on one side): points played and won, and how often both were at
+   the net, split, or both back. Tips are simple rules on those numbers (for
+   example, a pair that is split a lot is open through the middle) and
+   appear once there are at least 5 points.
 
    Per player and kind of shot, the **success rate** is the share kept in
    play (the other team had to play it back) or won outright, among shots
@@ -215,7 +244,7 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    strong (90% or more), weak (under 75%) or solid, and each player's
    weakest kind becomes a tip with one thing to try.
 15. **Player highlights.** Each player's winners, smashes, bandejas and long
-   points their team won (8+ shots, 3+ of them theirs) are ranked, overlaps
+   points their side won (8+ shots, 3+ of them theirs) are ranked, overlaps
    dropped, and the best 10 cut into `players/P#.mp4`. Every point the
    player finished with a winner (from 8 s before their shot to 3 s after)
    is also joined into `players/P#_winners.mp4`.
@@ -225,7 +254,7 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    court's width and laid over a blurred copy of itself.
 17. **Coach's summary** (optional). With the `coach` extra installed and
    `ANTHROPIC_API_KEY` set, the report's numbers (no video, no names, players
-   as P1-P4) are sent to Claude (`report.ai_model`, Claude Opus 5.5 by
+   as P1, P2, ...) are sent to Claude (`report.ai_model`, Claude Opus 5.5 by
    default) for a short written summary. Without a key this step is skipped.
 
 18. **Live results** (with a calibration; `live.enabled`, on by default).
@@ -239,7 +268,7 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    whose ball is done. Every point's own clip is cut in the background from
    the start; the condensed match at the end joins them. The best clips,
    highlight reel, player reels, shorts and the coach's summary come at the
-   end, when every point can be ranked and the repair has seen the whole
+   end, when every point can be ranked and who is who has seen the whole
    match, so numbers and even player numbers can still change then. The
    finished outputs are exactly those of a run without live results.
    Smoothing keeps the stretches of track that have not changed, so each

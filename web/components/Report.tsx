@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import {
+  byNumber,
+  pairLabel,
   playerLabel,
   withNames,
   type Api,
@@ -13,9 +15,8 @@ import {
 } from "@/lib/api";
 import { focusLine, keptInPlay, kindLabel, statsFromKinds } from "@/lib/shots";
 import { formatTime } from "./common";
-import { PLAYER_COLORS } from "./MatchViewer";
+import { playerColor } from "./MatchViewer";
 
-const PLAYERS = ["P1", "P2", "P3", "P4"];
 const MOMENT_LABELS: Record<string, string> = {
   winner: "Winner",
   point: "Long point won",
@@ -56,14 +57,15 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
             : ""}
         </p>
 
-        <PlayerNames names={names} onSave={onNames} />
+        <PlayerNames players={report.players} names={names} onSave={onNames} />
 
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Team</th>
-                <th>Points won</th>
+                <th>Pair</th>
+                <th>Points</th>
+                <th>Won</th>
                 <th>Winners</th>
                 <th>Errors</th>
                 <th>Both at net</th>
@@ -75,7 +77,8 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
             <tbody>
               {report.teams.map((t) => (
                 <tr key={t.team}>
-                  <td className={t.team === "A" ? "team-a" : "team-b"}>{t.players.map(label).join(" & ")}</td>
+                  <td>{pairLabel(t.team, names)}</td>
+                  <td>{t.points ?? "–"}</td>
                   <td>{t.points_won}</td>
                   <td>{t.winners}</td>
                   <td>{t.errors}</td>
@@ -100,6 +103,8 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
             <thead>
               <tr>
                 <th>Player</th>
+                <th>Points</th>
+                <th>Won</th>
                 <th>Shots</th>
                 <th>Winners</th>
                 <th>Errors</th>
@@ -112,10 +117,12 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
               {report.players.map((p) => (
                 <tr key={p.player}>
                   <td>
-                    <button className="link" onClick={() => onFocus(p.player)} style={{ color: PLAYER_COLORS[p.player] }}>
+                    <button className="link" onClick={() => onFocus(p.player)} style={{ color: playerColor(p.player) }}>
                       {label(p.player)}
                     </button>
                   </td>
+                  <td>{p.points ?? "–"}</td>
+                  <td>{p.points_won ?? "–"}</td>
                   <td>{p.shots}</td>
                   <td>{p.winners}</td>
                   <td>{p.errors}</td>
@@ -127,7 +134,10 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
             </tbody>
           </table>
         </div>
-        <p className="muted small">Movement counts only time during points. Click a player to see their highlights.</p>
+        <p className="muted small">
+          A pair is two people who played points together on one side of the net. Movement counts only time during
+          points. Click a player to see their highlights.
+        </p>
 
         {report.tips.length > 0 && (
           <>
@@ -174,7 +184,16 @@ export default function Report({ api, matchId, report, names, onNames, focus, on
   );
 }
 
-function PlayerNames({ names, onSave }: { names: Record<string, string>; onSave: (n: Record<string, string>) => void }) {
+function PlayerNames({
+  players,
+  names,
+  onSave,
+}: {
+  players: PlayerReport[];
+  names: Record<string, string>;
+  onSave: (n: Record<string, string>) => void;
+}) {
+  const pids = players.map((p) => p.player).sort(byNumber);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(names);
   if (!editing) {
@@ -198,14 +217,15 @@ function PlayerNames({ names, onSave }: { names: Record<string, string>; onSave:
       className="names"
       onSubmit={(e) => {
         e.preventDefault();
-        onSave(Object.fromEntries(PLAYERS.map((pid) => [pid, draft[pid] ?? ""])));
+        // Only names that changed: a name typed for a player is placed on them in the video.
+        onSave(Object.fromEntries(pids.filter((pid) => (draft[pid] ?? "") !== (names[pid] ?? "")).map((pid) => [pid, draft[pid] ?? ""])));
         setEditing(false);
       }}
     >
-      {PLAYERS.map((pid) => (
+      {pids.map((pid) => (
         <div key={pid}>
-          <label htmlFor={`name-${pid}`} style={{ color: PLAYER_COLORS[pid] }}>
-            {pid} · team {pid === "P1" || pid === "P2" ? "A" : "B"}
+          <label htmlFor={`name-${pid}`} style={{ color: playerColor(pid) }}>
+            {pid} · {players.find((p) => p.player === pid)?.points ?? 0} points
           </label>
           <input
             id={`name-${pid}`}
@@ -299,7 +319,7 @@ export function PlayerCard({
   matchId: string;
   p: PlayerReport;
   name: string;
-  names?: Record<string, string>; // for P1..P4 in short titles
+  names?: Record<string, string>; // for player numbers in short titles
   shorts?: Short[]; // the player's own vertical shorts
   onSeek?: (t: number) => void;
 }) {
@@ -314,6 +334,7 @@ export function PlayerCard({
   return (
     <div className="player-card">
       <div className="stats">
+        {p.points !== undefined && <Stat label="Points won" value={`${p.points_won ?? 0} of ${p.points}`} />}
         <Stat label="Shots" value={p.shots} />
         <Stat label="Winners" value={p.winners} />
         <Stat label="Errors" value={p.errors} />
@@ -321,6 +342,15 @@ export function PlayerCard({
         <Stat label="Per point" value={`${Math.round(p.distance_per_point_m)} m`} />
         <Stat label="Top speed" value={`${(p.top_speed_mps * 3.6).toFixed(1)} km/h`} />
       </div>
+      {p.partners && Object.keys(p.partners).length > 0 && (
+        <p className="small" style={{ margin: 0 }}>
+          Played with{" "}
+          {Object.entries(p.partners)
+            .map(([pid, n]) => `${names[pid] ?? pid} (${n} point${n === 1 ? "" : "s"})`)
+            .join(", ")}
+          .
+        </p>
+      )}
       {reel && (
         <div className="row">
           <div className="segmented" role="group" aria-label={`${name}'s reels`}>

@@ -24,7 +24,7 @@ export type Match = {
   duration_s: number | null;
   calibrated: boolean;
   error: string | null;
-  player_names?: Record<string, string>; // P1..P4 -> name
+  player_names?: Record<string, string>; // P1, P2, ... -> name
   tags?: Tag[];
   job: Job | null;
   live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
@@ -50,8 +50,7 @@ export type Keypoint = { name: string; x_m: number; y_m: number };
 export type CalibrationResult = { points_used: string[]; reprojection_error_m: number };
 
 export type PlayerStats = {
-  player: string;
-  team: string;
+  player: string; // P1, P2, ... in the order they first appeared
   seen_fraction: number;
   distance_m: number;
   avg_speed_mps: number;
@@ -65,7 +64,7 @@ export type TrackingSummary = {
   players: PlayerStats[];
   analysed_fps: number;
   outputs: Record<string, string>;
-  names?: Record<string, string>; // P1..P4 -> name, from tags
+  names?: Record<string, string>; // player -> name, from tags
 };
 
 export type Clip = {
@@ -109,7 +108,8 @@ export type Overlay = {
   court_to_image: number[][];
   lines: { name: string; points: [number, number][] }[];
   // Sample i: t[i], box[4i..4i+3] = x1 y1 x2 y2, xy[2i..2i+1] = court metres
-  players: Record<string, { team: "A" | "B"; t: number[]; box: number[]; xy: number[] }>;
+  // Version 2 has no fixed team: a team is whoever shares a half during a point.
+  players: Record<string, { t: number[]; box: number[]; xy: number[] }>;
 };
 
 export type BallSummary = {
@@ -144,7 +144,7 @@ export type Shot = {
   rally: number;
   number: number; // 1 for the serve
   player: string | null; // null when only the team could be told
-  team: "A" | "B" | null;
+  team: "A" | "B" | null; // the side the hitter played the point on: A the camera's, B the far one
   kind: ShotKind;
   zone: "net" | "mid" | "back" | null;
   court_x: number | null;
@@ -165,6 +165,7 @@ export type PointEnding = {
   ending: "winner" | "error" | "unknown";
   detail: "net" | "out" | null;
   won_by: "A" | "B" | null;
+  teams?: Partial<Record<"A" | "B", string[]>>; // who played the point on each side
 };
 
 export type ShotsSummary = { shots: Shot[]; points: PointEnding[]; outputs: Record<string, string> };
@@ -202,7 +203,9 @@ export type Short = {
 
 export type PlayerReport = {
   player: string;
-  team: "A" | "B";
+  points?: number; // points they played
+  points_won?: number; // by their side
+  partners?: Record<string, number>; // partner -> points together, most first
   shots: number;
   shot_kinds: Partial<Record<ShotKind, number>>;
   winners: number;
@@ -221,14 +224,17 @@ export type PlayerReport = {
   winners_reel?: string | null; // those points joined
 };
 
+/** A pair who played points together. */
 export type TeamReport = {
-  team: "A" | "B";
+  team: string; // "P1+P3"
   players: string[];
+  points?: number; // played together
   points_won: number;
   winners: number;
   errors: number;
   formation: Record<"both_net" | "split" | "both_back" | "other", number>;
   lob_share: number;
+  opponents?: string[];
 };
 
 export type Tip = { who: string; topic: string; text: string };
@@ -249,14 +255,13 @@ export type MatchReport = {
   outputs: Record<string, string>;
 };
 
-/** One player in one match (GET /matches/{id}/players/{P1..P4} and /people/{name}). */
+/** One player in one match (GET /matches/{id}/players/{P1, P2, ...} and /people/{name}). */
 export type PlayerInMatch = {
   match_id: string;
   match_title: string;
   match_date: string;
   player: string;
   name: string | null;
-  team: "A" | "B" | null;
   report: PlayerReport | null;
   shots: Shot[];
   reel: string | null;
@@ -399,7 +404,20 @@ export function playerLabel(pid: string, names?: Record<string, string>): string
   return name ? `${name} (${pid})` : pid;
 }
 
-/** Swap P1..P4 in engine text (tips, titles) for the players' names. */
+/** Swap player numbers in engine text (tips, titles) for the players' names; "P1+P3" reads "Maya & Sam". */
 export function withNames(text: string, names: Record<string, string> = {}): string {
-  return text.replace(/\bP[1-4]\b/g, (pid) => names[pid] ?? pid);
+  return text.replace(/\bP\d+\+P\d+\b/g, (pair) => pairLabel(pair, names)).replace(/\bP\d+\b/g, (pid) => names[pid] ?? pid);
+}
+
+/** "Maya & Sam" for the pair "P1+P3", numbers where there are no names. */
+export function pairLabel(pair: string, names: Record<string, string> = {}): string {
+  return pair
+    .split("+")
+    .map((pid) => names[pid] ?? pid)
+    .join(" & ");
+}
+
+/** Players' numbers in order: P2 before P10. */
+export function byNumber(a: string, b: string): number {
+  return Number(a.slice(1)) - Number(b.slice(1));
 }

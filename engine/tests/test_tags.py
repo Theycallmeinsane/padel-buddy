@@ -17,26 +17,41 @@ def test_a_tag_lands_on_the_box_under_it():
     assert find_segment(Tag(3.0, 900, 800, "Maya"), rows, times) is None  # nobody tracked then
 
 
-def test_names_keep_the_numbers_their_tags_show():
+def test_each_tag_pins_the_piece_under_it_to_its_name():
     boxes = {seg: (100 * seg, 0, 100 * seg + 50, 100) for seg in range(6)}
     rows = [row(float(seg), boxes[seg], seg) for seg in range(6)]
-    labels = ["P3", "P1", "P2", "P4", "P1", "P2"]
     at = lambda seg, name: Tag(float(seg), boxes[seg][0] + 25, 50, name)  # noqa: E731
 
-    found = resolve([at(0, "Maya"), at(1, "Ali")], rows, labels)
-    assert found.names == {"P3": "Maya", "P1": "Ali"} and found.pins == {0: "P3", 1: "P1"}
+    found = resolve([at(1, "Ali"), at(0, "Maya"), at(4, "Ali")], rows)
+    assert found.pins == {1: "Ali", 0: "Maya", 4: "Ali"} and list(found.pins) == [1, 0, 4]
+    assert found.pin_tags == {1: 0, 0: 1, 4: 2} and found.unmatched == []
 
-    # Ali is tagged twice as P1 and once on a P2 box: Ali stays P1, and that piece is pinned to P1.
-    found = resolve([at(1, "Ali"), at(4, "Ali"), at(5, "Ali")], rows, labels)
-    assert found.names == {"P1": "Ali"} and found.pins == {1: "P1", 4: "P1", 5: "P1"}
-
-    # Tagging the same piece again replaces the earlier tag; its name is then gone.
-    found = resolve([at(0, "Maya"), at(0, "Mia")], rows, labels)
-    assert found.names == {"P3": "Mia"} and found.pins == {0: "P3"} and found.unmatched == [0]
-    found = resolve([at(0, "Mia"), at(0, "Mia")], rows, labels)  # the same name twice is fine
+    # Tagging the same piece again replaces the earlier tag, which is reported.
+    found = resolve([at(0, "Maya"), at(0, "Mia")], rows)
+    assert found.pins == {0: "Mia"} and found.unmatched == [0]
+    found = resolve([at(0, "Mia"), at(0, "Mia")], rows)  # the same name twice is fine
     assert found.unmatched == []
 
-    # Four players: a fifth name cannot be placed, nor can a tag on nobody.
+    # Any number of names; a tag on nobody is reported.
     tags = [at(0, "A"), at(1, "B"), at(2, "C"), at(3, "D"), at(4, "E"), Tag(0.0, 5000, 5000, "F")]
-    found = resolve(tags, rows, labels)
-    assert len(found.names) == 4 and 5 in found.unmatched and len(found.unmatched) == 2
+    found = resolve(tags, rows)
+    assert len(set(found.pins.values())) == 5 and found.unmatched == [5]
+
+
+def test_a_spot_to_name_a_player_is_on_them_and_on_nobody_else():
+    from padel_engine.tags import spot_for
+
+    rows = []
+    for k in range(30):
+        t = k / 10
+        rows.append({**row(t, (100, 100, 200, 400), 0), "frame": k, "player": "P1"})
+        # P2 stands clear of P1 for a second, then in front of them.
+        box = (500, 100, 600, 400) if k < 10 else (150, 150, 250, 420)
+        rows.append({**row(t, box, 1 if k < 10 else 2), "frame": k, "player": "P2"})
+    spot = spot_for(rows, "P2")
+    assert spot.time_s == 0.5 and (spot.x, spot.y) == (550, 205)
+    times = [r["time_s"] for r in sorted(rows, key=lambda r: r["time_s"])]
+    assert find_segment(spot, sorted(rows, key=lambda r: r["time_s"]), times) == 1
+    p1 = spot_for(rows, "P1")
+    assert p1.time_s < 1.0  # only while P2 was clear of them
+    assert spot_for(rows, "P7") is None
