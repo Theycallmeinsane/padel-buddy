@@ -8,8 +8,9 @@ import pytest
 from padel_engine import analytics, court
 from padel_engine.calibration import Calibration
 from padel_engine.config import AnalyticsConfig, EngineConfig
-from padel_engine.pipeline import run_tracking
-from synthetic import H, W, Camera, ScriptedTracker, paths, render_frame
+from padel_engine.pipeline import read_tracks, relabel, run_tracking
+from padel_engine.tags import Tag
+from synthetic import H, W, Camera, ScriptedTracker, paths, person_bbox, render_frame
 
 SRC_FPS = 25.0
 
@@ -157,3 +158,49 @@ def test_shrunk_batched_frames_give_the_same_tracks(tmp_path):
         assert (a["frame"], a["player"], a["track_id"]) == (b["frame"], b["player"], b["track_id"])
         for k in ("x1", "y1", "x2", "y2", "court_x", "court_y"):
             assert float(a[k]) == pytest.approx(float(b[k]), abs=0.11), k
+
+
+def test_tags_name_players_and_fix_who_is_who_without_tracking_again(tmp_path):
+    cam = Camera()
+    gt = paths(12.0, SRC_FPS)
+    video = tmp_path / "match.mp4"
+    make_video(video, cam, gt)
+    calib = Calibration.from_points(
+        {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
+         ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
+        (W, H),
+    )
+    cfg = EngineConfig()
+    stride = round(SRC_FPS / cfg.tracking.process_fps)
+
+    def on(person, t, name):
+        """A tag on the middle of ``person``'s body at ``t`` seconds."""
+        x1, y1, x2, y2 = person_bbox(cam, gt[person][round(t * SRC_FPS)])
+        return Tag(t, (x1 + x2) / 2, (y1 + y2) / 2, name)
+
+    plain = run_tracking(video, calib, tmp_path / "plain", cfg, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    named = run_tracking(
+        video, calib, tmp_path / "run", cfg, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS),
+        tags=[on("A1", 1.0, "Maya"), on("A2", 1.0, "Ali")],
+    )
+    # Naming follows the numbers tracking gave; nobody is renumbered.
+    assert named.names == {"P1": "Maya", "P2": "Ali"} and named.unmatched_tags == []
+    assert [r["player"] for r in read_tracks(tmp_path / "run" / "tracks.csv")] == [
+        r["player"] for r in read_tracks(tmp_path / "plain" / "tracks.csv")
+    ]
+    assert plain.names == {}
+
+    # Later someone says the person tracked as Maya at 8 s is Ali.
+    tags = [on("A1", 1.0, "Maya"), on("A2", 1.0, "Ali"), on("A1", 8.0, "Ali")]
+    summary = relabel(tmp_path / "run", calib, tags, cfg)
+    assert summary.names == {"P1": "Maya", "P2": "Ali"}
+    rows = read_tracks(tmp_path / "run" / "tracks.csv")
+    at8 = [r for r in rows if abs(r["time_s"] - 8.0) < 0.05]
+    a1 = next(r for r in at8 if r["x1"] <= tags[2].x <= r["x2"] and r["y1"] <= tags[2].y <= r["y2"])
+    assert a1["player"] == "P2"
+    early = [r for r in rows if r["time_s"] < 1.05 and r["x1"] <= tags[0].x <= r["x2"] and r["y1"] <= tags[0].y <= r["y2"]]
+    assert early and early[-1]["player"] == "P1"  # before the tag nothing changed
+    assert len({(r["frame"], r["player"]) for r in rows}) == len(rows)  # never one number on two people
+    overlay = json.loads((tmp_path / "run" / "overlay.json").read_text())
+    for pid, p in overlay["players"].items():
+        assert len(p["t"]) == sum(r["player"] == pid for r in rows)

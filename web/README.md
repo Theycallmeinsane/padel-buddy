@@ -31,7 +31,7 @@ To use it from your phone on the same Wi-Fi, run the API with
 
 - **Matches** (`/`): upload with pause and resume (pick the same file again
   after a reload and it continues where it stopped), and the list of matches.
-- **Match** (`/match/?id=…`): calibration, analysis progress, the viewer,
+- **Match** (`/match/?id=…`): calibration, naming the players, analysis progress, the viewer,
   the match report, each player's highlights, the highlight reel, best
   points, player table and heatmaps.
 
@@ -46,6 +46,15 @@ name and the shot they just played, the status line says how the point ended,
 and each point on the timeline is edged in the colour of the team that won it.
 The original video only plays where the browser supports its codec (iPhone
 HEVC often doesn't), so points-only is the default.
+
+**Naming players.** After calibrating, **Name players** shows a frame: click
+each player and type their name, and the names follow them through the whole
+analysis. While watching, **Name a player** lets you click anyone at any
+moment and say who it is. If tracking mixed two players up, tag the right
+name after the mix-up and the rest of the match is put right in a few
+seconds, shots and report included. Tags are listed under the viewer;
+clicking one plays that moment, × takes it back, and a tag that couldn't be
+applied is marked so you can tag that player at another moment.
 
   The **match report** below the viewer has the team and player tables,
   tips and, if a Claude key is set on the server, a coach's summary; it
@@ -65,7 +74,7 @@ HEVC often doesn't), so points-only is the default.
 ## Checks
 
 ```bash
-npm test           # upload/resume logic, the API client, the viewer's clock
+npm test           # upload/resume logic, the API client, the viewer's clock, tagging
 npm run typecheck
 npm run build
 ```

@@ -11,18 +11,24 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, select, update
+from sqlalchemy.orm import Session, aliased
 
 from .db import Job, Match, now
 
 ACTIVE = ("queued", "running")
 
 
-def enqueue(session: Session, match: Match, config: dict | None = None) -> Job:
-    job = Job(match_id=match.id, kind="analyze", config=config)
-    session.add(job)
-    match.status = "queued"
+def enqueue(session: Session, match: Match, config: dict | None = None, kind: str = "analyze") -> Job:
+    """Queue work on a match: a full analysis, or ``relabel`` (who is who again, after a tag).
+
+    A job queued behind one already running for the same match waits for it.
+    """
+    running = any(j.status == "running" for j in match.jobs)
+    job = Job(match_id=match.id, kind=kind, config=config)
+    match.jobs.append(job)
+    if not running:
+        match.status = "queued"
     match.error = None
     session.commit()
     return job
@@ -35,10 +41,21 @@ def active_job(session: Session, match_id: str) -> Job | None:
 
 
 def claim_next(session: Session, worker: str) -> Job | None:
-    """Atomically take the oldest queued job, or return None."""
+    """Atomically take the oldest queued job, or return None.
+
+    Jobs for a match another worker is busy with wait, so two never write
+    one run folder at once.
+    """
+    busy = aliased(Job)
     for _ in range(5):
         job_id = session.scalars(
-            select(Job.id).where(Job.status == "queued").order_by(Job.created_at).limit(1)
+            select(Job.id)
+            .where(
+                Job.status == "queued",
+                ~exists().where(busy.match_id == Job.match_id, busy.status == "running"),
+            )
+            .order_by(Job.created_at)
+            .limit(1)
         ).first()
         if job_id is None:
             return None
@@ -81,7 +98,8 @@ def finish(session: Session, job: Job, error: str | None = None) -> None:
         job.progress = 1.0
     match = session.get(Match, job.match_id)
     if match is not None:
-        match.status = job.status
+        waiting = any(j.status == "queued" for j in match.jobs if j.id != job.id)
+        match.status = "queued" if waiting else job.status
         match.error = error
     session.commit()
 

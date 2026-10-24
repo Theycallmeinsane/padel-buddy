@@ -66,7 +66,8 @@ Each run folder contains:
 | File | What it is |
 | --- | --- |
 | `calibration_check.jpg` | The court model drawn over the first frame |
-| `tracks.csv` | One row per player per analysed frame: box, track id, court x/y in metres |
+| `tracks.csv` | One row per player per analysed frame: box, track id, track piece, court x/y in metres |
+| `segments.json` | Every piece of a player's track with its shirt colours, so names can be applied later without tracking again |
 | `summary.json` | Per-player distance, speed, time at net / mid / back, left / right share |
 | `heatmaps/P1.png` … `all.png` | Top-down occupancy heatmaps |
 | `preview.mp4` | With `track --preview` only: the video with player boxes and a minimap burnt in. The app's viewer draws the same live, so it is off by default |
@@ -126,6 +127,22 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    ones), and gives any piece that belongs to someone else back to them,
    never one number to two people at once. So if two players did get mixed
    up live, it is put right when they come back.
+
+   Tracks are also cut where two players part after passing within a metre
+   of each other, since that is where a swap would happen. Without names
+   those cuts are joined back, so they change nothing.
+   **Names.** In the app you can point at a player at any moment and type
+   their name (a tag). The tag lands on the piece of track under the click,
+   each name takes the player number most of its tags already show (four
+   names at most), and the repair then keeps every tagged piece on that
+   number. The pieces after a tag lean towards its player until the next
+   contact, and shirt colours decide where a mix-up actually happened. So
+   one tag after a swap is enough to put the rest of the match right, and
+   the names show in every output. Naming again only re-runs the repair,
+   shots and report from `segments.json` and `tracks.csv`, which takes
+   seconds. A tag that can't hold (nobody tracked under it, a fifth name,
+   or it contradicts another tag on the same stretch) is listed in
+   `summary.json` as not applied.
 4. **Analytics** smooths positions with a Kalman smoother that knows a
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones
@@ -256,7 +273,12 @@ so they need neither a GPU nor real footage. Clip tests need FFmpeg.
   Use a higher camera stand or a larger model (`--model yolo11m.pt`) if far
   players drift.
 - At changeovers, players who leave the frame are re-found by shirt colour.
-  Teammates in identical kit can swap ids at that moment.
+  Teammates in identical kit can swap ids at that moment. A name tag after
+  the swap fixes it.
+- A tag fixes a whole piece of track, and pieces end where a player
+  vanishes or passes close to another. Two tags on the same piece that
+  disagree can't both hold; the later one wins and the earlier one is shown
+  as not applied.
 - Calibration is manual for now; automatic court-line detection comes once
   we have sample footage to tune it on.
 - Hits from a neighbouring court sound the same as ours. Rallies there can

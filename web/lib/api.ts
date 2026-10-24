@@ -2,6 +2,7 @@
 
 export type Job = {
   id: string;
+  kind?: "analyze" | "relabel"; // relabel: who is who decided again after a tag
   status: "queued" | "running" | "done" | "failed";
   progress: number;
   error: string | null;
@@ -24,8 +25,21 @@ export type Match = {
   calibrated: boolean;
   error: string | null;
   player_names?: Record<string, string>; // P1..P4 -> name
+  tags?: Tag[];
   job: Job | null;
 };
+
+/** Someone named the person at (x, y) (source video pixels) at match time `time_s`. */
+export type Tag = {
+  id: string;
+  time_s: number;
+  x: number;
+  y: number;
+  name: string;
+  player: string | null; // the box clicked, when the match was already analysed
+  applied: boolean | null; // null until the next analysis; false when nobody tracked was there
+};
+export type TagIn = Omit<Tag, "id" | "applied">;
 
 export type UploadStatus = { received: number; total: number | null; complete: boolean };
 export type Keypoint = { name: string; x_m: number; y_m: number };
@@ -357,10 +371,14 @@ export class Api {
   frameUrl = (id: string, t: number) => this.media(`/matches/${id}/frame?t=${t}`);
   fileUrl = (id: string, rel: string) => this.media(`/matches/${id}/files/${rel}`);
   videoUrl = (id: string) => this.media(`/matches/${id}/video`);
-  overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`);
+  // Tags can rewrite the overlay in place, so always check it is current.
+  overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`, { cache: "no-cache" });
   ballTrack = (id: string, rel: string) => this.request<BallTrack>(`/matches/${id}/files/${rel}`);
   namePlayers = (id: string, names: Record<string, string>) =>
     this.request<Match>(`/matches/${id}/players`, { method: "PUT", body: JSON.stringify({ names }) });
+  addTag = (id: string, tag: TagIn) =>
+    this.request<Match>(`/matches/${id}/tags`, { method: "POST", body: JSON.stringify(tag) });
+  deleteTag = (id: string, tagId: string) => this.request<Match>(`/matches/${id}/tags/${tagId}`, { method: "DELETE" });
   player = (id: string, pid: string) => this.request<PlayerInMatch>(`/matches/${id}/players/${pid}`);
   reportUrl = (id: string) => this.media(`/matches/${id}/report.md`);
   people = () => this.request<Person[]>("/people");

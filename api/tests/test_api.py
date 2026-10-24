@@ -129,7 +129,7 @@ def test_job_lifecycle_with_fake_engine(client, settings, tmp_path):
 
     seen = {}
 
-    def fake_runner(video, run_dir, calibration, config, on_progress):
+    def fake_runner(video, run_dir, calibration, config, on_progress, tags=()):
         seen.update(video=video, calibration=calibration, pre=config.clips.pre_s)
         on_progress(0.5)
         (run_dir / "clips.json").write_text(json.dumps({"clips": [{"file": "clips/clip_001.mp4"}]}))
@@ -305,7 +305,7 @@ def test_padel_buddy_import_command_queues_analysis(settings, tmp_path, capsys):
     assert m["status"] == "queued" and m["job"]["status"] == "queued"
 
 
-def _fake_report_runner(video, run_dir, calibration, config, on_progress):
+def _fake_report_runner(video, run_dir, calibration, config, on_progress, tags=()):
     """Writes the shots and report the engine would make for the scripted match in engine/tests."""
     import match_fixture as mf
     from padel_engine.report import build_report
@@ -387,3 +387,95 @@ def test_the_claude_key_in_env_reaches_the_engine(tmp_path, monkeypatch):
     stop.set()
     worker.run_forever(settings, stop)
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-test"
+
+
+COURT = {
+    "far_left_corner": (400, 200), "far_right_corner": (880, 200),
+    "far_service_left": (370, 240), "far_service_right": (910, 240),
+    "near_service_left": (60, 640), "near_service_right": (1220, 640),
+}
+
+
+def test_tags_name_players_and_fix_mix_ups(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    m = client.post("/matches", json={"title": "Sunday"}).json()
+    mid = m["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+
+    # Named on the setup frame, before any analysis: the tag waits for it.
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 5, "x": 300, "y": 500, "name": " Maya "})
+    assert r.status_code == 201, r.text
+    (tag,) = r.json()["tags"]
+    assert tag["name"] == "Maya" and tag["applied"] is None and r.json()["player_names"] == {}
+
+    given = []
+
+    def engine(names, unmatched=()):
+        """A stand-in engine: records the tags and names players as told."""
+        def run(video, run_dir, calibration, config, on_progress, tags=()):
+            given.append([t["name"] for t in tags])
+            (run_dir / "segments.json").write_text("{}")
+            (run_dir / "summary.json").write_text(json.dumps({"names": names, "unmatched_tags": list(unmatched)}))
+        return run
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    client.post(f"/matches/{mid}/analyze")
+    assert worker.run_once(db, storage, "test", engine({"P1": "Maya"}))
+    m = client.get(f"/matches/{mid}").json()
+    assert given == [["Maya"]] and m["player_names"] == {"P1": "Maya"} and m["tags"][0]["applied"] is True
+
+    # Watching: tagging a new name on a box names that player at once, no job needed.
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 60, "x": 900, "y": 300, "name": "Ali", "player": "P3"})
+    m = r.json()
+    assert m["player_names"] == {"P1": "Maya", "P3": "Ali"} and m["job"]["kind"] == "analyze"
+
+    # Maya was tagged as P1; a tag says the P2 box is Maya: tracking mixed them up.
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 600, "x": 700, "y": 600, "name": "maya", "player": "P2"})
+    m = r.json()
+    assert m["player_names"] == {"P1": "Maya", "P3": "Ali"}  # unchanged until who is who is decided again
+    assert m["job"]["kind"] == "relabel" and m["job"]["status"] == "queued" and m["status"] == "queued"
+    assert m["tags"][-1]["applied"] is None
+
+    relabelled = []
+
+    def relabeler(video, run_dir, calibration, config, on_progress, tags=()):
+        relabelled.append((calibration is not None, [t["name"] for t in tags]))
+        (run_dir / "summary.json").write_text(json.dumps({"names": {"P1": "Maya", "P3": "Ali"}, "unmatched_tags": [2]}))
+
+    assert worker.run_once(db, storage, "test", engine({}), relabeler)
+    m = client.get(f"/matches/{mid}").json()
+    assert relabelled == [(True, ["Maya", "Ali", "Maya"])] and m["status"] == "done"  # one spelling per person
+    assert [t["applied"] for t in m["tags"]] == [True, True, False]  # the engine could not apply the last one
+
+    # Four players: a fifth name is refused.
+    for name, pid in (("Sam", "P2"), ("Jo", "P4")):
+        assert client.post(f"/matches/{mid}/tags", json={"time_s": 1, "x": 1, "y": 1, "name": name, "player": pid}).status_code == 201
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 1, "x": 1, "y": 1, "name": "Kim", "player": "P2"})
+    assert r.status_code == 409
+
+    # Renaming a player renames their tags; taking back a tag that held decides who is who again.
+    m = client.put(f"/matches/{mid}/players", json={"names": {"P3": "Ali Khan"}}).json()
+    assert [t["name"] for t in m["tags"]].count("Ali Khan") == 1
+    assert client.delete(f"/matches/{mid}/tags/nope").status_code == 404
+    m = client.delete(f"/matches/{mid}/tags/{m['tags'][0]['id']}").json()
+    assert len(m["tags"]) == 4 and m["job"]["kind"] == "relabel"
+
+
+def test_a_match_s_jobs_run_one_at_a_time(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    m = client.post("/matches", json={"title": "x"}).json()
+    client.put(f"/matches/{m['id']}/video", content=data)
+    client.post(f"/matches/{m['id']}/analyze")
+    db = Database(settings.db_url)
+    with db.sessions() as a, db.sessions() as b:
+        first = jobs.claim_next(a, "one")
+        first.match.status = "processing"  # as the worker does
+        a.commit()
+        match = b.get(type(first.match), m["id"])
+        jobs.enqueue(b, match, kind="relabel")
+        assert match.status == "processing"  # still the running analysis
+        assert jobs.claim_next(b, "two") is None  # waits for the analysis
+        jobs.finish(a, first)
+        assert a.get(type(first.match), m["id"]).status == "queued"  # the relabel is next
+        assert jobs.claim_next(b, "two").kind == "relabel"

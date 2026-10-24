@@ -15,12 +15,33 @@ class MatchCreate(BaseModel):
 
 class JobOut(BaseModel):
     id: str
+    kind: str = "analyze"  # or "relabel": who is who decided again after a tag
     status: str
     progress: float
     error: str | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class TagIn(BaseModel):
+    """Someone pointing at a person in the video and naming them."""
+
+    time_s: float = Field(..., ge=0, description="Match time of the moment, in seconds")
+    x: float = Field(..., description="A point on the person, in source video pixels")
+    y: float
+    name: str = Field(..., min_length=1, max_length=60)
+    player: str | None = Field(None, description="The box clicked (P1-P4), when the match is already analysed")
+
+
+class TagOut(BaseModel):
+    id: str
+    time_s: float
+    x: float
+    y: float
+    name: str
+    player: str | None
+    applied: bool | None  # None until the next analysis; False when no tracked player was there
 
 
 class MatchOut(BaseModel):
@@ -34,6 +55,7 @@ class MatchOut(BaseModel):
     calibrated: bool
     error: str | None
     player_names: dict[str, str] = {}
+    tags: list[TagOut] = []
     job: JobOut | None = None  # the latest analysis job
 
 

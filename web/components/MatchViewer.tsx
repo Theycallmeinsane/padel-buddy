@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot } from "@/lib/api";
+import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot, Tag } from "@/lib/api";
 import { KIND_LABELS } from "@/lib/shots";
+import { playerAt, toSource } from "@/lib/tags";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
+import { NameBox, TagList, type SaveTag } from "./Tags";
 
 // Same colours as the engine's preview video: team A in blues, team B warm.
 export const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
@@ -27,6 +29,7 @@ const COURT_LINES: [number, number, number, number][] = [
 type Layers = { lines: boolean; players: boolean; ball: boolean; shots: boolean; minimap: boolean };
 type Marks = { shots: Shot[]; names: Record<string, string>; focus: string | null };
 type Source = "points" | "full";
+type Draft = { t: number; x: number; y: number; player: string; left: number; top: number };
 
 export default function MatchViewer({
   api,
@@ -36,6 +39,12 @@ export default function MatchViewer({
   names = {},
   focus = null,
   seekTo = null,
+  tags = [],
+  suggestions = [],
+  onTag,
+  onDeleteTag,
+  updating = false,
+  version = "",
 }: {
   api: Api;
   matchId: string;
@@ -44,6 +53,12 @@ export default function MatchViewer({
   names?: Record<string, string>;
   focus?: string | null; // follow one player: the others are dimmed
   seekTo?: { t: number; n: number } | null; // a request from outside to play from match time t
+  tags?: Tag[];
+  suggestions?: string[]; // names to offer when tagging
+  onTag?: SaveTag;
+  onDeleteTag?: (id: string) => void;
+  updating?: boolean; // who is who is being decided again after a tag
+  version?: string; // changes when the outputs were rewritten in place
 }) {
   const clips = data.clips;
   const rallies = useMemo(() => clips?.rallies ?? [], [clips]);
@@ -63,6 +78,9 @@ export default function MatchViewer({
   const [ball, setBall] = useState<BallTrack | null>(null);
   const [layers, setLayers] = useState<Layers>({ lines: true, players: true, ball: true, shots: true, minimap: true });
   const [matchTime, setMatchTime] = useState(0);
+  const [tagging, setTagging] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
   const narrow = useMediaQuery("(max-width: 720px)");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -83,7 +101,7 @@ export default function MatchViewer({
     return () => {
       live = false;
     };
-  }, [api, matchId, overlayFile]);
+  }, [api, matchId, overlayFile, version]);
 
   useEffect(() => {
     if (!ballFile) return;
@@ -135,6 +153,35 @@ export default function MatchViewer({
     videoRef.current?.closest("section")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [seekTo, seek]);
 
+  function startTagging(on: boolean) {
+    setTagging(on);
+    setDraft(null);
+    setHint(on ? "Pause where you can see the player, then click their box." : null);
+    if (on) videoRef.current?.pause();
+  }
+
+  function pick(e: React.MouseEvent<HTMLCanvasElement>) {
+    const video = videoRef.current;
+    if (!tagging || !overlay || !video?.videoWidth) return;
+    video.pause();
+    const r = e.currentTarget.getBoundingClientRect();
+    const at = toSource(
+      e.clientX - r.left, e.clientY - r.top, r.width, r.height, video.videoWidth, video.videoHeight, overlay.size,
+    );
+    const t = toMatchTime(segments, video.currentTime);
+    const player = at && playerAt(overlay, t, at[0], at[1], BOX_GAP_S);
+    if (!at || !player) {
+      setDraft(null);
+      setHint("Nobody tracked there at this moment. Click inside a player's box.");
+      return;
+    }
+    setHint(null);
+    setDraft({
+      t, x: at[0], y: at[1], player,
+      left: ((e.clientX - r.left) / r.width) * 100, top: ((e.clientY - r.top) / r.height) * 100,
+    });
+  }
+
   function switchTo(next: Source) {
     resumeAt.current = matchTime;
     setSource(next);
@@ -150,6 +197,11 @@ export default function MatchViewer({
         <h2 className="grow" style={{ margin: 0 }}>
           Watch
         </h2>
+        {overlay && onTag && (
+          <button className={tagging ? "primary" : ""} onClick={() => startTagging(!tagging)}>
+            {tagging ? "Done naming" : "Name a player"}
+          </button>
+        )}
         {condensed && (
           <div className="segmented" role="group" aria-label="What to play">
             <button className={source === "points" ? "on" : ""} onClick={() => switchTo("points")}>
@@ -182,10 +234,29 @@ export default function MatchViewer({
               if (condensed) setSource("points");
             }}
           />
-          <canvas ref={canvasRef} aria-hidden="true" />
+          <canvas ref={canvasRef} aria-hidden="true" className={tagging ? "tagging" : undefined} onClick={pick} />
+          {draft && onTag && (
+            <NameBox
+              left={draft.left}
+              top={draft.top}
+              suggestions={suggestions}
+              onSave={async (name) => {
+                const error = await onTag({ time_s: draft.t, x: draft.x, y: draft.y, name, player: draft.player });
+                if (!error) setDraft(null);
+                return error;
+              }}
+              onCancel={() => setDraft(null)}
+            />
+          )}
         </div>
         {overlay && layers.minimap && (
-          <Minimap overlay={overlay} bounces={layers.ball ? ball?.bounces : undefined} t={matchTime} sideways={narrow} />
+          <Minimap
+            overlay={overlay}
+            bounces={layers.ball ? ball?.bounces : undefined}
+            t={matchTime}
+            sideways={narrow}
+            names={names}
+          />
         )}
       </div>
 
@@ -220,6 +291,10 @@ export default function MatchViewer({
       {rallies.length > 0 && (
         <Timeline rallies={rallies} best={best} endings={endings} total={total} t={matchTime} onSeek={seek} />
       )}
+
+      {tagging && hint && <p className="small muted">{hint}</p>}
+      {updating && <p className="small muted">Updating who is who from your tags. The names here change when it&apos;s done.</p>}
+      {onDeleteTag && <TagList tags={tags} onSeek={seek} onDelete={onDeleteTag} />}
 
       {fullFailed && (
         <p className="muted small">
@@ -378,11 +453,13 @@ function Minimap({
   bounces,
   t,
   sideways,
+  names,
 }: {
   overlay: Overlay;
   bounces?: Bounce[];
   t: number;
   sideways: boolean;
+  names: Record<string, string>;
 }) {
   // Upright: far wall at the top, as the camera sees it. Sideways (phones, under
   // the video): turned a quarter clockwise, far wall on the right.
@@ -429,7 +506,7 @@ function Minimap({
             <polyline points={trail.join(" ")} className="trail" />
             <circle cx={x} cy={y} r={0.38} fill="currentColor" />
             <text x={x} y={y - 0.6} className="mm-label">
-              {pid}
+              {names[pid]?.split(" ")[0].slice(0, 8) ?? pid}
             </text>
           </g>
         );

@@ -39,6 +39,8 @@ class TrackingSummary(BaseModel):
     analysed_frames: int
     players: list[PlayerStats]
     outputs: dict[str, str]  # name -> relative path inside the run folder
+    names: dict[str, str] = {}  # player -> name, from tags
+    unmatched_tags: list[int] = []  # tags (by position) with no tracked player under them
 
 
 class RallyInfo(BaseModel):
