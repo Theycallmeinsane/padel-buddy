@@ -83,3 +83,10 @@ To use it from a browser instead: run the API and a worker
 This repository is public. Keys go in a local `.env` (git-ignored; copy
 `.env.example`). Videos, run outputs and model weights are git-ignored too;
 keep them under `data/` and `runs/`.
+
+## Contributing
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Every pull
+request is reviewed by the maintainer before it is merged. Report security
+issues privately ([SECURITY.md](SECURITY.md)). Licensed under the
+[MIT licence](LICENSE).

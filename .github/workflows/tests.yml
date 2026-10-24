@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The checks only read the code, so their token can do nothing else.
+permissions:
+  contents: read
+
 jobs:
   engine:
     runs-on: ubuntu-latest
