@@ -620,3 +620,40 @@ def test_a_job_left_behind_by_a_closed_app_can_be_stopped_and_deleted(client, se
         jobs.requeue_stale(s, settings.stale_job_s)
     assert client.get(f"/matches/{mid}").json()["status"] == "stopped"
     assert client.delete(f"/matches/{mid}").status_code == 204
+
+
+def test_stopping_who_is_who_keeps_the_finished_results(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+    client.post(f"/matches/{mid}/analyze")
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "segments.json").write_text("{}")
+        (run_dir / "summary.json").write_text(json.dumps({"names": {"P1": "Maya"}, "players": []}))
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    assert worker.run_once(db, storage, "test", engine)
+
+    def tag(t: float) -> dict:  # on a frame, so who is who is decided again
+        body = {"time_s": t, "x": 700, "y": 600, "name": "Ali", "player": None}
+        return client.post(f"/matches/{mid}/tags", json=body).json()
+
+    # Queued: the match goes back to its results, not to "stopped" with nothing shown.
+    assert tag(600)["job"]["kind"] == "relabel"
+    m = client.post(f"/matches/{mid}/stop").json()
+    assert m["status"] == "done" and m["job"]["status"] == "stopped"
+
+    # Running: the same once the worker has stopped.
+    assert tag(700)["job"]["status"] == "queued"
+
+    def relabel(video, run_dir, calibration, config, on_progress, tags=()):
+        on_progress(0.1)
+        client.post(f"/matches/{mid}/stop")
+        on_progress(0.5)
+
+    assert worker.run_once(db, storage, "test", engine, relabel)
+    m = client.get(f"/matches/{mid}").json()
+    assert m["status"] == "done" and m["job"]["status"] == "stopped"
+    assert client.get(f"/matches/{mid}/results").json()["tracking"]["names"] == {"P1": "Maya"}

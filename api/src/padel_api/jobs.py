@@ -89,16 +89,23 @@ def request_stop(session: Session, match: Match, stale_after_s: float) -> bool:
     quiet = set(session.scalars(
         select(Job.id).where(Job.match_id == match.id, Job.status.in_(BUSY), Job.heartbeat_at < cutoff)
     ))
-    stopping = False
+    stopping, kinds = False, set()
     for job in match.jobs:
         if job.status == "queued" or job.id in quiet:
             job.status, job.finished_at = "stopped", now()
+            kinds.add(job.kind)
         elif job.status in BUSY:
             job.status, stopping = "stopping", True
     if not stopping:
-        match.status = "stopped"
+        match.status = _status_after_stop(kinds)
     session.commit()
     return stopping
+
+
+def _status_after_stop(kinds: set[str]) -> str:
+    # Who is who is decided again only on a finished analysis, whose results
+    # are left as they were when that stops.
+    return "done" if kinds == {"relabel"} else "stopped"
 
 
 class ProgressReporter:
@@ -136,7 +143,7 @@ def finish(session: Session, job: Job, error: str | None = None, stopped: bool =
     match = session.get(Match, job.match_id)
     if match is not None:
         waiting = any(j.status == "queued" for j in match.jobs if j.id != job.id)
-        match.status = "queued" if waiting else job.status
+        match.status = "queued" if waiting else _status_after_stop({job.kind}) if stopped else job.status
         match.error = error
     session.commit()
 
