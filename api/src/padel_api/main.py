@@ -60,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     storage = LocalStorage(settings.data_dir)
 
     app = FastAPI(title="Padel Buddy API", version=__version__)
+    app.state.db = db
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -71,6 +72,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_session() -> Iterator[Session]:
         yield from db.session()
 
+    # Closed when the endpoint returns, not once the response is sent: a browser
+    # streams a video or clip for as long as it plays, and a connection held for
+    # each stream ran the pool dry.
+    session_dep = Depends(get_session, scope="function")
+
     def require_token(
         authorization: str | None = Header(None), token: str | None = Query(None)
     ) -> None:
@@ -80,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not secrets.compare_digest(given, settings.api_token):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or wrong API token")
 
-    def load_match(match_id: str, session: Session = Depends(get_session)) -> Match:
+    def load_match(match_id: str, session: Session = session_dep) -> Match:
         match = session.get(Match, match_id)
         if match is None:
             raise HTTPException(404, "Match not found")
@@ -104,7 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # -- matches ----------------------------------------------------------
 
     @app.post("/matches", status_code=201, dependencies=auth)
-    def create_match(body: MatchCreate, session: Session = Depends(get_session)) -> MatchOut:
+    def create_match(body: MatchCreate, session: Session = session_dep) -> MatchOut:
         ext = Path(body.filename).suffix.lower() or ".mp4"
         if ext not in ALLOWED_VIDEO_EXTS:
             raise HTTPException(415, f"Unsupported video type {ext}; use one of {sorted(ALLOWED_VIDEO_EXTS)}")
@@ -116,7 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return match_out(match)
 
     @app.get("/matches", dependencies=auth)
-    def list_matches(session: Session = Depends(get_session)) -> list[MatchOut]:
+    def list_matches(session: Session = session_dep) -> list[MatchOut]:
         rows = session.scalars(select(Match).order_by(Match.created_at.desc())).all()
         return [match_out(m) for m in rows]
 
@@ -125,7 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return match_out(match)
 
     @app.delete("/matches/{match_id}", status_code=204, dependencies=auth)
-    def delete_match(match: Match = Depends(load_match), session: Session = Depends(get_session)) -> Response:
+    def delete_match(match: Match = Depends(load_match), session: Session = session_dep) -> Response:
         job = jobs.active_job(session, match.id)
         if job is not None and job.status == "running":
             raise HTTPException(409, "The match is being analysed; delete it when the job finishes")
@@ -144,7 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_video(
         request: Request,
         match: Match = Depends(load_match),
-        session: Session = Depends(get_session),
+        session: Session = session_dep,
         content_range: str | None = Header(None),
     ) -> UploadStatus:
         """Upload the whole file, or one chunk with ``Content-Range: bytes a-b/total``.
@@ -224,7 +230,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/matches/{match_id}/calibration", dependencies=auth)
     def set_calibration(
-        body: CalibrationIn, match: Match = Depends(load_match), session: Session = Depends(get_session)
+        body: CalibrationIn, match: Match = Depends(load_match), session: Session = session_dep
     ) -> CalibrationOut:
         from padel_engine.calibration import Calibration, CalibrationError
 
@@ -238,7 +244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return CalibrationOut(points_used=sorted(calib.points), reprojection_error_m=calib.reprojection_error_m)
 
     @app.delete("/matches/{match_id}/calibration", status_code=204, dependencies=auth)
-    def clear_calibration(match: Match = Depends(load_match), session: Session = Depends(get_session)) -> Response:
+    def clear_calibration(match: Match = Depends(load_match), session: Session = session_dep) -> Response:
         match = session.merge(match)
         match.calibration = None
         session.commit()
@@ -248,7 +254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/matches/{match_id}/analyze", status_code=202, dependencies=auth)
     def analyze(
-        body: AnalyzeIn | None = None, match: Match = Depends(load_match), session: Session = Depends(get_session)
+        body: AnalyzeIn | None = None, match: Match = Depends(load_match), session: Session = session_dep
     ) -> JobOut:
         from padel_engine.config import EngineConfig
 
@@ -281,7 +287,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/matches/{match_id}/players", dependencies=auth)
     def name_players(
-        body: PlayerNamesIn, match: Match = Depends(load_match), session: Session = Depends(get_session)
+        body: PlayerNamesIn, match: Match = Depends(load_match), session: Session = session_dep
     ) -> MatchOut:
         unknown = set(body.names) - set(PLAYER_IDS)
         if unknown:
@@ -310,7 +316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return match_out(match)
 
     @app.post("/matches/{match_id}/tags", status_code=201, dependencies=auth)
-    def add_tag(body: TagIn, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
+    def add_tag(body: TagIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
         """Name the person at a spot in the video at one moment.
 
         Before analysis the tag waits for it. On a player's box in an
@@ -360,7 +366,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return match_out(match)
 
     @app.delete("/matches/{match_id}/tags/{tag_id}", dependencies=auth)
-    def delete_tag(tag_id: str, match: Match = Depends(load_match), session: Session = Depends(get_session)) -> MatchOut:
+    def delete_tag(tag_id: str, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
         match = session.merge(match)
         tags = list(match.tags or [])
         gone = next((t for t in tags if t["id"] == tag_id), None)
@@ -406,7 +412,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(to_markdown(report, match.player_names or {}), media_type="text/markdown; charset=utf-8")
 
     @app.get("/people", dependencies=auth)
-    def people(session: Session = Depends(get_session)) -> list[PersonOut]:
+    def people(session: Session = session_dep) -> list[PersonOut]:
         counts: dict[str, list] = {}
         for match in session.scalars(select(Match)):
             for name in (match.player_names or {}).values():
@@ -415,7 +421,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [PersonOut(name=n, matches=c) for n, c in sorted(counts.values(), key=lambda e: e[0].casefold())]
 
     @app.get("/people/{name}", dependencies=auth)
-    def person(name: str, session: Session = Depends(get_session)) -> list[PlayerOut]:
+    def person(name: str, session: Session = session_dep) -> list[PlayerOut]:
         """Everything about one person: each match they were named in, newest first."""
         key = " ".join(name.split()).casefold()
         found = []
