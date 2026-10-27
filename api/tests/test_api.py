@@ -545,3 +545,30 @@ def test_a_name_typed_for_a_player_becomes_a_tag_on_them(client, settings, tmp_p
     m = client.put(f"/matches/{mid}/players", json={"names": {"P1": "maya"}}).json()
     assert m["player_names"] == {"P5": "Maya"} and [t["name"] for t in m["tags"]] == ["Maya", "Maya"]
     assert m["tags"][1]["player"] == "P1" and m["tags"][1]["applied"] is None and m["job"]["kind"] == "relabel"
+
+
+def test_streaming_a_video_or_clip_holds_no_database_connection(client, settings, tmp_path):
+    # A browser keeps video and clip streams open for as long as they play. A
+    # connection held for each stream ran the pool dry ("QueuePool limit reached").
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    m = client.post("/matches", json={"title": "Sunday doubles"}).json()
+    upload_in_chunks(client, m["id"], data, len(data))
+    clip = LocalStorage(settings.data_dir).run_dir(m["id"]) / "clips" / "rally_001.mp4"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(data)
+
+    app, in_use = client.app, []
+
+    async def watch(scope, receive, send):
+        async def spy(message):
+            if message["type"] == "http.response.body":
+                in_use.append(app.state.db.engine.pool.checkedout())
+            await send(message)
+
+        await app(scope, receive, spy)
+
+    watched = TestClient(watch)
+    for url in (f"/matches/{m['id']}/video", f"/matches/{m['id']}/files/clips/rally_001.mp4"):
+        r = watched.get(url)
+        assert r.status_code == 200 and r.content == data
+    assert in_use and max(in_use) == 0

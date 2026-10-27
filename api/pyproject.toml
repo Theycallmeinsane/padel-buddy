@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # Also install the engine from this repo: pip install -e ../engine
 dependencies = [
     "padel-engine",
-    "fastapi>=0.110",
+    "fastapi>=0.121",
     "uvicorn[standard]>=0.29",
     "sqlalchemy>=2.0",
     "pydantic-settings>=2.2",
