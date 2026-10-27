@@ -1,6 +1,7 @@
 import json
 import shutil
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -539,3 +540,83 @@ def test_streaming_a_video_or_clip_holds_no_database_connection(client, settings
         r = watched.get(url)
         assert r.status_code == 200 and r.content == data
     assert in_use and max(in_use) == 0
+
+
+def test_stopping_drops_queued_work_and_stops_a_running_job(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    assert client.post(f"/matches/{mid}/stop").status_code == 409  # nothing to stop
+
+    # Queued: it never starts.
+    client.post(f"/matches/{mid}/analyze")
+    stopped = client.post(f"/matches/{mid}/stop").json()
+    assert stopped["status"] == "stopped" and stopped["job"]["status"] == "stopped"
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    assert worker.run_once(db, storage, "test", lambda *a, **k: None) is False
+
+    # Running: it stops at its next progress report, and what it found so far stays.
+    client.post(f"/matches/{mid}/analyze")
+    reached = []
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "live.json").write_text(json.dumps({"covered_s": 300.0, "duration_s": 5400.0, "done": False}))
+        on_progress(0.1)
+        match = client.post(f"/matches/{mid}/stop").json()
+        assert match["status"] == "processing" and match["job"]["status"] == "stopping"
+        assert client.post(f"/matches/{mid}/analyze").status_code == 409  # not until it has stopped
+        on_progress(0.5)
+        reached.append("past the stop")
+
+    assert worker.run_once(db, storage, "test", engine) is True
+    assert reached == []
+    match = client.get(f"/matches/{mid}").json()
+    assert match["status"] == "stopped" and match["job"]["status"] == "stopped" and match["error"] is None
+    assert match["live"]["covered_s"] == 300.0
+    assert client.post(f"/matches/{mid}/analyze").status_code == 202  # and it can run again
+
+
+def test_deleting_a_match_being_analysed_stops_it_first(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.post(f"/matches/{mid}/analyze")
+    answers = []
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        on_progress(0.1)
+        answers.append(client.delete(f"/matches/{mid}").status_code)
+        on_progress(0.5)
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    worker.run_once(db, storage, "test", engine)
+    assert answers == [409]  # asked to stop; the run folder was still open
+    assert client.delete(f"/matches/{mid}").status_code == 204
+    assert client.get(f"/matches/{mid}").status_code == 404
+    assert not storage.match_dir(mid).exists()
+
+
+def test_a_job_left_behind_by_a_closed_app_can_be_stopped_and_deleted(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.post(f"/matches/{mid}/analyze")
+    db = Database(settings.db_url)
+    with db.sessions() as s:
+        job = jobs.claim_next(s, "closed app")
+        job.match.status = "processing"
+        job.heartbeat_at = job.heartbeat_at - timedelta(seconds=settings.stale_job_s + 1)
+        s.commit()
+    # Nobody is left to see a stop request, so it stops straight away.
+    assert client.post(f"/matches/{mid}/stop").json()["status"] == "stopped"
+    with db.sessions() as s:
+        assert jobs.requeue_stale(s, settings.stale_job_s) == 0  # and isn't started again
+    client.post(f"/matches/{mid}/analyze")
+    with db.sessions() as s:
+        job = jobs.claim_next(s, "closed again")
+        job.status = "stopping"  # the app closed while stopping
+        job.heartbeat_at = job.heartbeat_at - timedelta(seconds=settings.stale_job_s + 1)
+        s.commit()
+        jobs.requeue_stale(s, settings.stale_job_s)
+    assert client.get(f"/matches/{mid}").json()["status"] == "stopped"
+    assert client.delete(f"/matches/{mid}").status_code == 204

@@ -119,10 +119,29 @@ function MatchView() {
     }
   }
 
+  async function stopAnalysis() {
+    if (!confirm("Stop the analysis? What it has found so far stays; analyse again to do the whole match.")) return;
+    setError(null);
+    try {
+      setMatch(await api.stop(id));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function remove() {
     if (!confirm("Delete this match and all its clips?")) return;
     try {
-      await api.deleteMatch(id);
+      // While it is being analysed, the first delete stops the analysis; delete again once it has.
+      for (let tries = 0; ; tries++) {
+        try {
+          await api.deleteMatch(id);
+          break;
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 409) || tries >= 30) throw e;
+          await new Promise((done) => setTimeout(done, 2000));
+        }
+      }
       router.push("/");
     } catch (e) {
       setError((e as Error).message);
@@ -136,6 +155,7 @@ function MatchView() {
   const uploaded = !["created", "uploading"].includes(match.status);
   const busy = ACTIVE.has(match.status);
   const relabelling = busy && match.job?.kind === "relabel";
+  const stopping = match.job?.status === "stopping";
   const step = match.status === "done" || results ? 3 : match.calibrated || match.job ? 2 : 1;
   const version = `${match.job?.id}:${match.job?.finished_at}:${live?.covered_s ?? ""}`;
 
@@ -214,15 +234,25 @@ function MatchView() {
           )}
           {busy && match.job && (
             <div style={{ marginTop: 16 }}>
-              <p className="small muted" style={{ margin: "0 0 6px" }}>
-                {relabelling
-                  ? `Updating who is who from your tags… ${Math.round(match.job.progress * 100)}%`
-                  : match.status === "queued"
-                    ? "Waiting for a worker…"
-                    : `Analysing… ${Math.round(match.job.progress * 100)}%`}
-              </p>
+              <div className="row" style={{ margin: "0 0 6px" }}>
+                <p className="small muted grow" style={{ margin: 0 }}>
+                  {stopping
+                    ? "Stopping…"
+                    : relabelling
+                      ? `Updating who is who from your tags… ${Math.round(match.job.progress * 100)}%`
+                      : match.status === "queued"
+                        ? "Waiting for a worker…"
+                        : `Analysing… ${Math.round(match.job.progress * 100)}%`}
+                </p>
+                <button className="small" onClick={stopAnalysis} disabled={stopping}>
+                  Stop
+                </button>
+              </div>
               <ProgressBar value={match.job.progress} />
             </div>
+          )}
+          {match.status === "stopped" && !live && (
+            <p className="small muted">The analysis was stopped. Analyse again when you&apos;re ready.</p>
           )}
           {live && !relabelling && <LiveNote covered={live.covered_s} duration={live.duration_s} running={busy} />}
           {match.status === "failed" && <p className="error small">Analysis failed: {match.error}</p>}
@@ -272,8 +302,8 @@ function MatchView() {
 
       {error && <p className="error small">{error}</p>}
       <p>
-        <button className="link small" onClick={remove} disabled={busy && match.status === "processing"}>
-          Delete match
+        <button className="link small" onClick={remove}>
+          {busy ? "Stop and delete match" : "Delete match"}
         </button>
       </p>
     </>

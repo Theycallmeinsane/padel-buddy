@@ -3,7 +3,7 @@
 export type Job = {
   id: string;
   kind?: "analyze" | "relabel"; // relabel: who is who decided again after a tag
-  status: "queued" | "running" | "done" | "failed";
+  status: "queued" | "running" | "stopping" | "stopped" | "done" | "failed";
   progress: number;
   error: string | null;
   created_at: string;
@@ -12,7 +12,7 @@ export type Job = {
 };
 
 export type MatchStatus =
-  | "created" | "uploading" | "uploaded" | "queued" | "processing" | "done" | "failed";
+  | "created" | "uploading" | "uploaded" | "queued" | "processing" | "stopped" | "done" | "failed";
 
 export type Match = {
   id: string;
@@ -372,6 +372,7 @@ export class Api {
   clearCalibration = (id: string) => this.request<void>(`/matches/${id}/calibration`, { method: "DELETE" });
   analyze = (id: string, config?: object) =>
     this.request<Job>(`/matches/${id}/analyze`, { method: "POST", body: JSON.stringify({ config: config ?? null }) });
+  stop = (id: string) => this.request<Match>(`/matches/${id}/stop`, { method: "POST" });
   results = (id: string) => this.request<Results>(`/matches/${id}/results`);
   frameUrl = (id: string, t: number) => this.media(`/matches/${id}/frame?t=${t}`);
   // `version` changes when an output is rewritten under the same name (live results), so the browser fetches it again.
