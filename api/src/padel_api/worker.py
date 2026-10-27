@@ -53,7 +53,8 @@ def process(
     from padel_engine.calibration import Calibration
     from padel_engine.config import EngineConfig
 
-    match = session.get(Match, job.match_id)
+    job_id, match_id = job.id, job.match_id  # the rows may be gone after a stop
+    match = session.get(Match, match_id)
     if match is None:
         jobs.finish(session, job, error="match was deleted")
         return
@@ -77,6 +78,15 @@ def process(
             run_dir = storage.reset_run(match.id)
             runner(video, run_dir, calib, config, jobs.ProgressReporter(session, job), tags=tags)
         _take_names(session, match, tags, storage.run_dir(match.id) / "summary.json")
+    except jobs.Stopped:
+        session.rollback()
+        log.info("job %s stopped", job_id)
+        job = session.get(Job, job_id)
+        if job is not None:
+            jobs.finish(session, job, stopped=True)
+        else:
+            storage.delete(match_id)  # the match was deleted while it ran: what the job wrote goes too
+        return
     except Exception as exc:  # the job records the failure; the worker keeps going
         log.error("job %s failed:\n%s", job.id, traceback.format_exc())
         session.rollback()

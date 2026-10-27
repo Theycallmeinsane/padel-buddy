@@ -17,6 +17,7 @@ const LABELS: Record<MatchStatus, string> = {
   uploaded: "Ready to analyse",
   queued: "Queued",
   processing: "Analysing",
+  stopped: "Stopped",
   done: "Done",
   failed: "Failed",
 };

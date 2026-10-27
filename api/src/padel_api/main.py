@@ -132,10 +132,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/matches/{match_id}", status_code=204, dependencies=auth)
     def delete_match(match: Match = Depends(load_match), session: Session = session_dep) -> Response:
-        job = jobs.active_job(session, match.id)
-        if job is not None and job.status == "running":
-            raise HTTPException(409, "The match is being analysed; delete it when the job finishes")
-        session.delete(session.merge(match))
+        match = session.merge(match)
+        if any(j.status in jobs.BUSY for j in match.jobs) and jobs.request_stop(session, match, settings.stale_job_s):
+            # The worker still has the run folder open; the page deletes again once it has stopped.
+            raise HTTPException(409, "Stopping the analysis first; delete the match again in a few seconds")
+        session.delete(match)
         session.commit()
         storage.delete(match.id)
         return Response(status_code=204)
@@ -270,6 +271,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except ValueError as exc:
                 raise HTTPException(422, f"Invalid engine config: {exc}") from exc
         return _job_out(jobs.enqueue(session, match, config))
+
+    @app.post("/matches/{match_id}/stop", dependencies=auth)
+    def stop(match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        """Stop the analysis: queued work is dropped, a running job stops within a few seconds."""
+        match = session.merge(match)
+        if jobs.active_job(session, match.id) is None:
+            raise HTTPException(409, "Nothing is queued or being analysed")
+        jobs.request_stop(session, match, settings.stale_job_s)
+        return match_out(match)
 
     @app.get("/matches/{match_id}/results", dependencies=auth)
     def results(match: Match = Depends(load_match)) -> dict:
