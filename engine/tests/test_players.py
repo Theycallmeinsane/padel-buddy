@@ -8,6 +8,7 @@ from padel_engine.calibration import Calibration
 from padel_engine.config import TrackingConfig
 from padel_engine.detection import Detection
 from padel_engine.players import (
+    NOT_A_PLAYER,
     Candidate,
     PlayerAssigner,
     Segment,
@@ -356,3 +357,20 @@ def test_a_tag_after_a_real_swap_finds_where_it_happened_by_colour():
     # Named at the start (the first pieces) and the P2 box near the end tagged as the P1 player.
     labels = repair_identities(segments, cfg, {0: "P1", 1: "P2", 7: "P1"})
     assert labels == ["P1", "P2", "P1", "P2", "P2", "P1", "P2", "P1", "P3", "P4"]
+
+
+def test_someone_tagged_as_not_a_player_is_dropped_with_everyone_who_looks_like_them():
+    """A ball fetcher in orange is picked up three times while P2 is lost; a tag on one of those drops all three."""
+    a1, a2, green, yellow, orange = colour(0), colour(4), colour(8), colour(12), colour(16)
+    segments = [
+        track("P1", 0, 599, a1), track("P3", 0, 599, green), track("P4", 0, 599, yellow),
+        track("P2", 0, 99, a2), track("P2", 100, 149, orange), track("P2", 150, 299, a2),
+        track("P2", 300, 349, orange), track("P2", 350, 499, a2), track("P2", 500, 549, orange),
+        track("P2", 550, 599, a2),
+    ]
+    cfg = TrackingConfig()
+    assert repair_identities(segments, cfg) == ["P1", "P3", "P4", *["P2"] * 7]
+    labels = repair_identities(segments, cfg, {6: NOT_A_PLAYER})
+    assert labels == ["P1", "P3", "P4", "P2", "-", "P2", "-", "P2", "-", "P2"]
+    # Named players are kept, and the tag on the fetcher still holds.
+    assert repair_identities(segments, cfg, {3: "P2", 6: NOT_A_PLAYER}) == labels

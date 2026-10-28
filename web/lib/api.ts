@@ -42,6 +42,7 @@ export type Tag = {
   name: string;
   player: string | null; // the box clicked, when the match was already analysed
   applied: boolean | null; // null until the next analysis; false when nobody tracked was there
+  not_player?: boolean; // someone the tracking took for a player, e.g. a ball fetcher; no name
 };
 export type TagIn = Omit<Tag, "id" | "applied">;
 

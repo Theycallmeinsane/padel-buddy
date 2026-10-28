@@ -45,6 +45,7 @@ function MatchView() {
     [live, tagged, match?.player_names],
   );
   const tags = useMemo(() => match?.tags ?? [], [match?.tags]);
+  const named = tags.filter((t) => !t.not_player);
   const known = useMemo(() => suggestions(names, people), [names, people]);
   const seek = useCallback((t: number) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 })), []);
 
@@ -223,7 +224,7 @@ function MatchView() {
                 </button>
                 {match.calibrated && (
                   <button onClick={() => setNaming(true)}>
-                    {tags.length ? `Named players (${new Set(tags.map((t) => t.name.toLowerCase())).size})` : "Name players"}
+                    {named.length ? `Named players (${new Set(named.map((t) => t.name.toLowerCase())).size})` : "Name players"}
                   </button>
                 )}
                 <button className="primary" onClick={analyze} disabled={busy}>

@@ -27,6 +27,10 @@ the tracker may have swapped them. The repair keeps those pieces together
 unless a tag (someone naming a player in the video) says otherwise: a tag
 pins its piece to that player, and the pieces after it follow until the
 track breaks or the next tag.
+
+A tag can also say someone is not a player (a ball fetcher picked up when a
+player was lost). Their piece is dropped, and so is every piece that looks
+more like them than like any player.
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from .config import TrackingConfig
 from .detection import Detection
 
 PLAYER_IDS = ("P1", "P2", "P3", "P4")
+NOT_A_PLAYER = "-"  # the label of a piece that tags say is someone else
 TEAM_OF = {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}
 _START_SIDE = {"P1": "near", "P2": "near", "P3": "far", "P4": "far"}
 
@@ -288,6 +293,9 @@ class PlayerAssigner:
 
 
 _SLOT = {pid: k for k, pid in enumerate(PLAYER_IDS)}
+_NOBODY = len(PLAYER_IDS)  # a label after the four players': not a player
+_LABEL = {**_SLOT, NOT_A_PLAYER: _NOBODY}
+_NAMES = (*PLAYER_IDS, NOT_A_PLAYER)
 # Which player sits on each of the four slots (-1: none running), for every
 # arrangement that uses no player twice: 209 of them.
 _STATES = [
@@ -316,6 +324,9 @@ def repair_identities(
     player and teaches their colours first, and the pieces after it on the
     same track lean to that player until the next pin. With the colour
     repair off only the pins move anyone.
+
+    A piece pinned to ``NOT_A_PLAYER`` is nobody's, and so is any piece
+    whose colours match those pinned pieces better than any player's.
     """
     if not segments:
         return []
@@ -333,7 +344,7 @@ def repair_identities(
     if not pins:
         return [PLAYER_IDS[k] for k in base]
 
-    pinned = {i: _SLOT[p] for i, p in pins.items()}
+    pinned = {i: _LABEL[p] for i, p in pins.items()}
     lean = {}  # piece after a pin on a tagged track -> that pin's player
     for chain in chains:
         last = None  # the last pin so far along this track
@@ -371,7 +382,7 @@ def repair_identities(
             # A tag outweighs the live pass: where the two disagree over one
             # player, the track the tag is on keeps them.
             weight.append(_LEAN_WEIGHT if i in lean else 1.0)
-    return [PLAYER_IDS[k] for k in _repair(segments, units, own, cfg, fixed, prev, weight)]
+    return [_NAMES[k] for k in _repair(segments, units, own, cfg, fixed, prev, weight)]
 
 
 def _chains(segments: list[Segment]) -> list[list[int]]:
@@ -402,6 +413,8 @@ def _repair(
     (``weight`` times more clearly); ``fixed`` units are their player
     whatever the colours. A unit with a ``prev`` (the unit before it on the
     same track) leans, from the second round on, to whoever that one became.
+    Units fixed to ``_NOBODY`` are not players, and give the look that
+    makes others not players too.
     """
     fixed = fixed or {}
     prev = prev or [None] * len(units)
@@ -412,15 +425,19 @@ def _repair(
     min_clear = cfg.prototype_min_s * cfg.process_fps
     teach = {u for u, m in enumerate(merged) if m.clear >= min_clear or (u in fixed and m.clear)}
     protos: dict[int, np.ndarray] = {}
+    others = None  # how the people tagged as not players look
     if cfg.repair_identities:
         # What tags say comes first, then each player's earliest long stretch.
         protos = _prototypes(merged, fixed, list(fixed))
         for u in sorted(teach - set(fixed), key=lambda u: merged[u].first):
-            protos.setdefault(labels[u], merged[u].colour)
+            if labels[u] != _NOBODY:
+                protos.setdefault(labels[u], merged[u].colour)
+        others = _mean_colour([merged[u] for u, k in fixed.items() if k == _NOBODY])
     for _ in range(_REPAIR_ROUNDS):
-        cost = _label_costs(merged, own, protos, cfg, weight)
+        cost = _label_costs(merged, own, protos, cfg, weight, others)
         for u, k in fixed.items():
             cost[u] = _PINNED
+            cost[u, _NOBODY] = _NEVER  # a tag naming a player cannot be met by dropping the piece
             cost[u, k] = 0.0
         new = _best_labels(merged, slots, cost)
         follow = [own[u] if p is None or u in fixed else new[p] for u, p in enumerate(prev)]
@@ -437,6 +454,7 @@ def _repair(
 
 
 _PINNED = 1e9  # cost of giving a pinned piece to anyone but its player
+_NEVER = 1e12  # cost of saying a piece is not a player without a tag or a look to say so
 _LEAN_WEIGHT = 2.0
 
 
@@ -455,26 +473,41 @@ def _prototypes(units: list[Segment], label: dict[int, int], use) -> dict[int, n
     """Each player's reference colours: the mean over the ``use`` units labelled as them."""
     protos = {}
     for k in range(len(PLAYER_IDS)):
-        mine = [units[u] for u in use if label.get(u) == k and units[u].clear]
-        if mine:
-            protos[k] = (sum(s.colour_sum for s in mine) / sum(s.clear for s in mine)).astype(np.float32)
+        mine = _mean_colour([units[u] for u in use if label.get(u) == k])
+        if mine is not None:
+            protos[k] = mine
     return protos
+
+
+def _mean_colour(parts: list[Segment]) -> np.ndarray | None:
+    parts = [s for s in parts if s.clear]
+    if not parts:
+        return None
+    return (sum(s.colour_sum for s in parts) / sum(s.clear for s in parts)).astype(np.float32)
 
 
 def _label_costs(
     segments: list[Segment], own: list[int], protos: dict[int, np.ndarray], cfg: TrackingConfig,
-    weight: list[float],
+    weight: list[float], others: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Cost of calling each segment each player: colour distance per clear frame, plus a fee for a new label."""
-    cost = np.zeros((len(segments), len(PLAYER_IDS)))
+    """Cost of calling each segment each player, or not a player (the last column).
+
+    Colour distance per clear frame, plus a fee for a new label. Only a piece
+    that looks like ``others`` (people tagged as not players), or that leans
+    to not being a player already, can be no player.
+    """
+    cost = np.zeros((len(segments), len(PLAYER_IDS) + 1))
     min_clear = cfg.repair_min_clear_s * cfg.process_fps
     for i, s in enumerate(segments):
+        cost[i, _NOBODY] = 0.0 if own[i] == _NOBODY else _NEVER
         if s.clear and s.clear >= min_clear:
             colour = s.colour
             dist = {k: appearance_distance(colour, p) for k, p in protos.items()}
             # A player with no reference colours is no evidence either way.
             neutral = dist.get(own[i], 0.5)
-            cost[i] = [s.clear * dist.get(k, neutral) for k in range(len(PLAYER_IDS))]
+            cost[i, :_NOBODY] = [s.clear * dist.get(k, neutral) for k in range(_NOBODY)]
+            if others is not None:
+                cost[i, _NOBODY] = s.clear * appearance_distance(colour, others)
         fee = s.frames * cfg.repair_switch_cost * weight[i]
         cost[i] += fee
         cost[i, own[i]] -= fee
@@ -487,7 +520,8 @@ def _best_labels(segments: list[Segment], slot: list[int], cost: np.ndarray) -> 
     ``slot`` is the live slot each segment ran on. Sweeps through time
     keeping, for each way the players can sit on the slots running at that
     moment (at most 24), the cheapest labelling of everything so far. Exact,
-    and linear in the number of segments.
+    and linear in the number of segments. A segment that is not a player
+    (``_NOBODY``) leaves its slot empty.
     """
     costs = cost.tolist()
     # A segment covers frames first..last; at a shared frame, ends come first.
@@ -502,9 +536,9 @@ def _best_labels(segments: list[Segment], slot: list[int], cost: np.ndarray) -> 
         prev = bytearray(b"\xff") * len(_STATES)
         for s, c in best.items():
             state = _STATES[s]
-            options = [k for k in range(4) if k not in state] if starts else [-1]
+            options = [*(k for k in range(4) if k not in state), _NOBODY] if starts else [-1]
             for k in options:
-                t = _STATE_INDEX[state[:j] + (k,) + state[j + 1 :]]
+                t = _STATE_INDEX[state[:j] + (k if k != _NOBODY else -1,) + state[j + 1 :]]
                 c2 = c + costs[i][k] if starts else c
                 if c2 < nxt.get(t, np.inf):
                     nxt[t], prev[t] = c2, s
@@ -515,7 +549,8 @@ def _best_labels(segments: list[Segment], slot: list[int], cost: np.ndarray) -> 
     s = min(best, key=best.get)
     for (_, starts, i), prev in zip(reversed(events), reversed(back)):
         if starts:
-            labels[i] = _STATES[s][slot[i]]
+            k = _STATES[s][slot[i]]
+            labels[i] = k if k >= 0 else _NOBODY
         s = prev[s]
     return labels
 

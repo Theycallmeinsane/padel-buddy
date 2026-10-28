@@ -7,6 +7,7 @@ writes everything to one run folder:
     calibration_check.jpg   court model drawn over a frame (verify the fit)
     tracks.csv              one row per player per analysed frame
     segments.json           each piece of track and its colours, to re-decide who is who
+    not_players.csv         rows of people tags say are not players, kept for re-deciding
     summary.json            per-player movement stats (schemas.TrackingSummary)
     overlay.json            court lines and smoothed player positions for the app
     heatmaps/P1.png ...     top-down occupancy per player, plus all.png
@@ -30,8 +31,8 @@ from .calibration import Calibration
 from .config import EngineConfig
 from .detection import PersonTracker, YoloPersonTracker, detect_batch
 from .players import (
-    PLAYER_IDS, TEAM_OF, Candidate, PlayerAssigner, Segment, appearance_of, load_segments, repair_identities,
-    save_segments,
+    NOT_A_PLAYER, PLAYER_IDS, TEAM_OF, Candidate, PlayerAssigner, Segment, appearance_of, load_segments,
+    repair_identities, save_segments,
 )
 from .schemas import CalibrationMeta, PlayerStats, TrackingSummary, VideoMeta
 from .tags import Resolved, Tag, resolve
@@ -41,6 +42,8 @@ TRACK_COLUMNS = [
     "frame", "time_s", "player", "team", "track_id", "confidence",
     "x1", "y1", "x2", "y2", "court_x", "court_y", "segment",
 ]
+
+NOT_PLAYERS_CSV = "not_players.csv"  # tracked rows of people tags say are not players
 
 ProgressFn = Callable[[float], None]
 ChunkFn = Callable[[float, list[dict]], None]
@@ -137,15 +140,16 @@ def run_tracking(
                 on_progress(min(share * analysed / total, 0.99))
         if on_chunk is not None and analysed and t >= due:
             found = label_rows(rows, assigner.segments, tags or [], cfg)
-            _summarise(out, rows, analysed, fps, calib, video, cfg, dict(outputs), found, smooth_cache)
-            on_chunk(t, rows)
+            _summarise(out, players_only(rows), analysed, fps, calib, video, cfg, dict(outputs), found, smooth_cache)
+            on_chunk(t, players_only(rows))
             due = (math.floor(t / cfg.live.every_s) + 1) * cfg.live.every_s
 
     # Who is who is only settled once the repair has seen the whole match, so
     # every output is written from here on.
     save_segments(out / "segments.json", assigner.segments)
     found = label_rows(rows, assigner.segments, tags or [], cfg)
-    write_tracks(out / "tracks.csv", rows)
+    write_rows(out, rows)
+    rows = players_only(rows)
 
     if preview and analysed:
         preview_path = out / "preview.mp4"
@@ -176,16 +180,24 @@ def relabel(
     old = TrackingSummary.model_validate_json((out / "summary.json").read_bytes())
     segments = load_segments(out / "segments.json")
     rows = read_tracks(out / "tracks.csv")
+    if (out / NOT_PLAYERS_CSV).exists():
+        rows += read_tracks(out / NOT_PLAYERS_CSV)
     found = label_rows(rows, segments, tags, cfg)
-    write_tracks(out / "tracks.csv", rows)
+    write_rows(out, rows)
     # The preview video has the old numbers burnt in.
     outputs = {k: v for k, v in old.outputs.items() if k != "preview"}
     calib = calibration.scaled_to((old.video.width, old.video.height))
-    return _summarise(out, rows, old.analysed_frames, old.analysed_fps, calib, old.video, cfg, outputs, found)
+    return _summarise(
+        out, players_only(rows), old.analysed_frames, old.analysed_fps, calib, old.video, cfg, outputs, found
+    )
 
 
 def label_rows(rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: EngineConfig) -> Resolved:
-    """Give every row the player its segment turned out to be, tags included, and sort the rows."""
+    """Give every row the player its segment turned out to be, tags included, and sort the rows.
+
+    Rows of people the tags say are not players get ``NOT_A_PLAYER`` and no
+    team; ``players_only`` leaves them out.
+    """
     labels = repair_identities(segments, cfg.tracking)
     found = Resolved({}, {}, [])
     if tags:
@@ -198,9 +210,21 @@ def label_rows(rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: 
             found.unmatched = sorted(found.unmatched + missed)
     for row in rows:
         row["player"] = labels[row["segment"]]
-        row["team"] = TEAM_OF[row["player"]]
+        row["team"] = TEAM_OF.get(row["player"], "")
     rows.sort(key=lambda r: (r["frame"], r["player"]))
     return found
+
+
+def players_only(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if r["player"] != NOT_A_PLAYER]
+
+
+def write_rows(out: Path, rows: list[dict]) -> None:
+    """The players' rows to tracks.csv; the others are kept aside, should a later tag make one a player again."""
+    write_tracks(out / "tracks.csv", players_only(rows))
+    others = [r for r in rows if r["player"] == NOT_A_PLAYER]
+    if others or (out / NOT_PLAYERS_CSV).exists():
+        write_tracks(out / NOT_PLAYERS_CSV, others)
 
 
 def write_tracks(path: Path, rows: list[dict]) -> None:

@@ -7,7 +7,15 @@ import { formatTime } from "./common";
 /** Saves a tag; resolves to an error message, or null when it was saved. */
 export type SaveTag = (tag: TagIn) => Promise<string | null>;
 
-/** "Who is this?", shown over the picture where someone was clicked (left/top in % of the picture). */
+/** What a tag says: the name, or that the person is not a player. */
+export function tagLabel(tag: Tag): string {
+  return tag.not_player ? "Not a player" : tag.name;
+}
+
+/**
+ * "Who is this?", shown over the picture where someone was clicked (left/top in % of the picture).
+ * "Not a player" saves no name: the tracking drops that person, e.g. a ball fetcher it took for a player.
+ */
 export function NameBox({
   left,
   top,
@@ -18,13 +26,18 @@ export function NameBox({
   left: number;
   top: number;
   suggestions: string[];
-  onSave: (name: string) => Promise<string | null>;
+  onSave: (name: string, notPlayer: boolean) => Promise<string | null>;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const above = top > 55; // keep the box on the picture
+  async function save(notPlayer: boolean) {
+    setSaving(true);
+    setError(await onSave(notPlayer ? "" : name.trim(), notPlayer));
+    setSaving(false);
+  }
   return (
     <form
       className="name-box"
@@ -33,11 +46,9 @@ export function NameBox({
         top: `${top}%`,
         transform: above ? "translate(-50%, calc(-100% - 10px))" : "translate(-50%, 10px)",
       }}
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
-        setSaving(true);
-        setError(await onSave(name.trim()));
-        setSaving(false);
+        save(false);
       }}
       onKeyDown={(e) => e.key === "Escape" && onCancel()}
     >
@@ -59,6 +70,9 @@ export function NameBox({
       <div className="row small">
         <button className="primary" type="submit" disabled={!name.trim() || saving}>
           {saving ? "Saving…" : "Save"}
+        </button>
+        <button type="button" onClick={() => save(true)} disabled={saving} title="A ball fetcher, coach or anyone else">
+          Not a player
         </button>
         <button type="button" onClick={onCancel}>
           Cancel
@@ -85,7 +99,7 @@ export function TagList({
       {[...tags]
         .sort((a, b) => a.time_s - b.time_s)
         .map((t) => {
-          const label = `${t.name} · ${formatTime(t.time_s)}`;
+          const label = `${tagLabel(t)} · ${formatTime(t.time_s)}`;
           return (
             <li
               key={t.id}
@@ -156,7 +170,8 @@ export function PlayerTagger({
     <div>
       <p className="small muted" style={{ marginTop: 0 }}>
         Click each player and type their name, on a frame where you can see them clearly. The names follow them
-        through the whole match. You can also name or correct anyone later, while watching.
+        through the whole match. Naming them again on other frames helps keep them apart. Click a ball fetcher or
+        anyone else the tracking picks up and choose Not a player. You can also do all of this later, while watching.
       </p>
       <div className="frame">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -174,7 +189,7 @@ export function PlayerTagger({
               className="pt named"
               style={{ left: `${(tag.x / size[0]) * 100}%`, top: `${(tag.y / size[1]) * 100}%` }}
             >
-              <span>{tag.name}</span>
+              <span>{tagLabel(tag)}</span>
             </div>
           ))}
         {size && draft && (
@@ -182,8 +197,10 @@ export function PlayerTagger({
             left={(draft[0] / size[0]) * 100}
             top={(draft[1] / size[1]) * 100}
             suggestions={suggestions}
-            onSave={async (name) => {
-              const error = await onTag({ time_s: t, x: draft[0], y: draft[1], name, player: null });
+            onSave={async (name, notPlayer) => {
+              const error = await onTag({
+                time_s: t, x: draft[0], y: draft[1], name, player: null, not_player: notPlayer,
+              });
               if (!error) setDraft(null);
               return error;
             }}
