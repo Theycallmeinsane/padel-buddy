@@ -307,6 +307,36 @@ def browser_copy(video: str | Path, dest: Path, crf: int = 23, encoder: str = "a
     return dest
 
 
+def original_cut(video: str | Path, spans: list[tuple[float, float]], dest: Path) -> Path:
+    """The spans of the original video joined without re-encoding: the camera's own quality.
+
+    Stream copying can only start on a keyframe, so each span starts at the
+    keyframe before it, usually under a second early. ``dest`` should keep
+    the original's extension so its codecs fit the container. Written beside
+    ``dest`` and moved over it when finished.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fast = ["-movflags", "+faststart"] if dest.suffix.lower() in (".mp4", ".mov", ".m4v") else []
+    with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
+        parts = []
+        for i, (a, b) in enumerate(spans):
+            part = Path(tmp) / f"part_{i:04d}{dest.suffix}"
+            _ffmpeg(
+                "-ss", f"{a:.3f}", "-i", str(video), "-t", f"{b - a:.3f}", "-map", "0:v:0", "-map", "0:a:0?",
+                "-c", "copy", "-map_metadata", "0", "-avoid_negative_ts", "make_zero", *fast, str(part),
+            )
+            parts.append(part)
+        joined = Path(tmp) / f"joined{dest.suffix}"
+        if len(parts) == 1:
+            parts[0].replace(joined)
+        else:
+            listing = Path(tmp) / "parts.txt"
+            listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts))
+            _ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", *fast, str(joined))
+        joined.replace(dest)
+    return dest
+
+
 def thumbnail(video: str | Path, at: float, dest: Path, width: int = 480) -> Path:
     _ffmpeg("-ss", f"{at:.3f}", "-i", str(video), "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "3", str(dest))
     return dest

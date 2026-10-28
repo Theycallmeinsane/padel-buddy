@@ -222,6 +222,7 @@ export default function MatchViewer({
             ref={videoRef}
             src={src}
             controls
+            controlsList="nodownload"
             playsInline
             preload="metadata"
             onLoadedMetadata={(e) => {
@@ -301,6 +302,11 @@ export default function MatchViewer({
         <Timeline rallies={rallies} best={best} endings={endings} total={total} t={matchTime} onSeek={seek} />
       )}
 
+      <p className="small" style={{ margin: "8px 0 0" }}>
+        <a href={api.originalVideoUrl(matchId)} download>
+          Download the full match (original file)
+        </a>
+      </p>
       {tagging && hint && <p className="small muted">{hint}</p>}
       {updating && <p className="small muted">Updating who is who from your tags. The names here change when it&apos;s done.</p>}
       {onDeleteTag && <TagList tags={tags} onSeek={seek} onDelete={onDeleteTag} />}

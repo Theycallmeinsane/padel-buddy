@@ -33,7 +33,18 @@ export default function Results({
             {version && !clips.clips.length ? "" : ` · ${plural(clips.clips.length, points ? "best point" : "intense moment")}`}
           </p>
           {clips.highlights ? (
-            <video className="reel" controls preload="metadata" src={api.fileUrl(matchId, clips.highlights)} />
+            <>
+              <video
+                className="reel"
+                controls
+                controlsList="nodownload"
+                preload="metadata"
+                src={api.fileUrl(matchId, clips.highlights)}
+              />
+              <a className="small" href={api.originalUrl(matchId, clips.highlights)} download>
+                Download in original quality
+              </a>
+            </>
           ) : version && clips.rallies.length ? (
             <p className="muted">The highlight reel and the best points come when the analysis finishes.</p>
           ) : (
@@ -45,7 +56,16 @@ export default function Results({
                 Condensed match: every point back to back
                 {clips.condensed_s ? ` (${formatTime(clips.condensed_s)})` : ""}
               </summary>
-              <video className="reel" controls preload="none" src={api.fileUrl(matchId, clips.condensed)} />
+              <video
+                className="reel"
+                controls
+                controlsList="nodownload"
+                preload="none"
+                src={api.fileUrl(matchId, clips.condensed)}
+              />
+              <a className="small" href={api.originalUrl(matchId, clips.condensed)} download>
+                Download in original quality
+              </a>
             </details>
           )}
         </section>
@@ -132,7 +152,13 @@ function ClipCard({ api, matchId, clip }: { api: Api; matchId: string; clip: Cli
   return (
     <div className="clip">
       {playing || !clip.thumbnail ? (
-        <video controls autoPlay={playing} preload="metadata" src={api.fileUrl(matchId, clip.file)} />
+        <video
+          controls
+          controlsList="nodownload"
+          autoPlay={playing}
+          preload="metadata"
+          src={api.fileUrl(matchId, clip.file)}
+        />
       ) : (
         <button
           className="link"
@@ -152,6 +178,9 @@ function ClipCard({ api, matchId, clip }: { api: Api; matchId: string; clip: Cli
           {clip.rallies?.length ? plural(clip.rallies.length, "point") : `peak ${formatTime(clip.peak_s)}`} ·{" "}
           {formatTime(clip.end_s - clip.start_s)}
         </span>
+        <a className="small" href={api.originalUrl(matchId, clip.file)} download>
+          Download
+        </a>
       </div>
     </div>
   );

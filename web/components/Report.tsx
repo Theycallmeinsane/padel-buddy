@@ -343,7 +343,19 @@ export function PlayerCard({
         </div>
       )}
       {reelFile ? (
-        <video key={reelFile} className="reel" controls preload="metadata" src={api.fileUrl(matchId, reelFile)} />
+        <>
+          <video
+            key={reelFile}
+            className="reel"
+            controls
+            controlsList="nodownload"
+            preload="metadata"
+            src={api.fileUrl(matchId, reelFile)}
+          />
+          <a className="small" href={api.originalUrl(matchId, reelFile)} download>
+            Download in original quality
+          </a>
+        </>
       ) : (
         <p className="muted small" style={{ margin: 0 }}>
           {p.highlights.length ? "No reel was cut for this player." : `No winners or overheads were found for ${name}.`}

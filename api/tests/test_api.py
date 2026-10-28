@@ -671,3 +671,41 @@ def test_full_match_plays_a_browser_copy_of_a_video_browsers_cannot_show(client,
 
     served = client.get(f"/matches/{m['id']}/video").content
     assert served != original and served == storage.web_video_path(m["id"]).read_bytes()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_downloads_are_cut_from_the_original_without_re_encoding(client, settings, tmp_path):
+    import subprocess
+
+    m = client.post("/matches", json={"title": "Sunday: final"}).json()
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4", seconds=6).read_bytes())
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "clips.json").write_text(json.dumps({
+            "rallies": [{"index": 0, "start_s": 1.0, "end_s": 2.0, "clip": "points/point_001.mp4"}],
+            "clips": [{"file": "clips/clip_001.mp4", "start_s": 0.5, "end_s": 2.5}],
+            "highlights": "highlights.mp4", "highlight_segments": [[0.0, 1.0], [3.0, 4.0]],
+            "condensed": "condensed.mp4", "condensed_segments": [[0.5, 2.5, 0.0]],
+        }))
+
+    client.post(f"/matches/{m['id']}/analyze")
+    assert worker.run_once(Database(settings.db_url), LocalStorage(settings.data_dir), "test", engine)
+
+    def probe(data: bytes) -> str:
+        f = tmp_path / "got.mp4"
+        f.write_bytes(data)
+        return subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name:format=duration",
+             "-of", "csv=p=0", str(f)], capture_output=True, text=True, check=True,
+        ).stdout.split()
+
+    for rel, seconds in (("points/point_001.mp4", 2), ("clips/clip_001.mp4", 2), ("highlights.mp4", 2)):
+        r = client.get(f"/matches/{m['id']}/original/{rel}")
+        assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+        codec, duration = probe(r.content)
+        assert codec == "mpeg4" and abs(float(duration) - seconds) < 1.1  # the upload's own codec, not H.264
+    assert client.get(f"/matches/{m['id']}/original/nothing.mp4").status_code == 404
+
+    full = client.get(f"/matches/{m['id']}/video", params={"download": 1})
+    assert full.content == (tmp_path / "v.mp4").read_bytes()
+    assert full.headers["content-disposition"].endswith("Sunday%20final.mp4")
