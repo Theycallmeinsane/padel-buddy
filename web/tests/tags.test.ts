@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Overlay } from "../lib/api";
-import { liveNames, playerAt, suggestions, toSource } from "../lib/tags";
+import type { Overlay, Tag } from "../lib/api";
+import { labelCounts, labelGap, labelMoments, labelsToDo, liveNames, playerAt, suggestions, toSource } from "../lib/tags";
 
 const overlay = {
   size: [1920, 1080],
@@ -34,5 +34,36 @@ describe("tagging a player", () => {
   it("shows the names tags gave so far while analysing, moving a saved name if a tag says so", () => {
     expect(liveNames({ P1: "Maya", P2: "Ali" }, { P3: "maya" })).toEqual({ P2: "Ali", P3: "maya" });
     expect(liveNames({ P1: "Maya" }, {})).toEqual({ P1: "Maya" });
+  });
+});
+
+const tag = (name: string, time_s: number, extra: Partial<Tag> = {}): Tag => ({
+  id: `${name}${time_s}`, time_s, x: 0, y: 0, name, player: null, applied: null, ...extra,
+});
+
+describe("naming each player five times", () => {
+  it("offers five moments spread across the match", () => {
+    expect(labelMoments(600)).toEqual([60, 180, 300, 420, 540]);
+    expect(labelMoments(3)).toEqual([0, 1, 2]); // too short for five different frames
+    expect(labelMoments(null)).toEqual([]);
+  });
+
+  it("counts names at least 10 s apart, fewer in a short match", () => {
+    expect(labelGap(600)).toBe(10);
+    expect(labelGap(50)).toBe(5);
+    const tags = [
+      tag("Maya", 60), tag("maya", 64), tag("Maya", 180), tag("Maya", 190),
+      tag("Ali", 60), tag("", 60, { not_player: true }), tag("Sam", 300, { applied: false }),
+    ];
+    expect(labelCounts(tags, 10)).toEqual([{ name: "Maya", count: 3 }, { name: "Ali", count: 1 }]);
+  });
+
+  it("says what is left before analysing", () => {
+    expect(labelsToDo([])).toEqual(["name all four players"]);
+    expect(labelsToDo([{ name: "Maya", count: 3 }, { name: "Ali", count: 5 }])).toEqual([
+      "Maya 3 of 5", "name 2 more players",
+    ]);
+    const done = ["Maya", "Ali", "Sam", "Noor"].map((name) => ({ name, count: 5 }));
+    expect(labelsToDo(done)).toEqual([]);
   });
 });

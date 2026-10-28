@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { Api, Tag, TagIn } from "@/lib/api";
+import { LABEL_GOAL, labelCounts, labelGap, labelMoments } from "@/lib/tags";
 import { formatTime } from "./common";
 
 /** Saves a tag; resolves to an error message, or null when it was saved. */
@@ -130,7 +131,10 @@ export function TagList({
   );
 }
 
-/** Before analysis: click each player on a frame and name them. */
+/**
+ * Before analysis: click each player on a frame and name them, at five moments
+ * spread across the match, so the tracking sees each of them at different times.
+ */
 export function PlayerTagger({
   api,
   matchId,
@@ -150,12 +154,24 @@ export function PlayerTagger({
   onDelete: (id: string) => void;
   onDone: () => void;
 }) {
-  const [t, setT] = useState(Math.min(5, durationS ?? 5));
+  const moments = useMemo(() => labelMoments(durationS), [durationS]);
+  const [t, setT] = useState(moments[0] ?? 0);
   const [size, setSize] = useState<[number, number] | null>(null);
   const [draft, setDraft] = useState<[number, number] | null>(null);
   const img = useRef<HTMLImageElement>(null);
   const frameUrl = useMemo(() => api.frameUrl(matchId, t), [api, matchId, t]);
   const here = tags.filter((tag) => Math.abs(tag.time_s - t) < 0.5);
+  const counts = labelCounts(tags, labelGap(durationS));
+  const moment = moments.indexOf(t);
+  const before = moments.filter((m) => m < t).at(-1);
+  const after = moments.find((m) => m > t);
+  // Everyone named on this frame: on to the next moment.
+  const nextReady = new Set(here.filter((tag) => !tag.not_player).map((tag) => tag.name.toLowerCase())).size >= 4;
+
+  function go(to: number) {
+    setDraft(null);
+    setT(to);
+  }
 
   function click(e: React.MouseEvent<HTMLImageElement>) {
     if (!img.current) return;
@@ -169,9 +185,10 @@ export function PlayerTagger({
   return (
     <div>
       <p className="small muted" style={{ marginTop: 0 }}>
-        Click each player and type their name, on a frame where you can see them clearly. The names follow them
-        through the whole match. Naming them again on other frames helps keep them apart. Click a ball fetcher or
-        anyone else the tracking picks up and choose Not a player. You can also do all of this later, while watching.
+        Click each of the four players and type their name, then go to the next moment and do it again. Naming
+        them on {LABEL_GOAL} frames spread across the match shows the tracking how they look at different times,
+        which keeps them apart. Click a ball fetcher or anyone else it picks up and choose Not a player. The slider
+        picks any other frame, and you can also name players later, while watching.
       </p>
       <div className="frame">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -208,6 +225,23 @@ export function PlayerTagger({
           />
         )}
       </div>
+      {moments.length > 1 && (
+        <div className="row small" style={{ marginTop: 8 }}>
+          <span className="muted grow">
+            {moment >= 0 ? `Moment ${moment + 1} of ${moments.length}` : "A frame you picked"}
+          </span>
+          <button onClick={() => before !== undefined && go(before)} disabled={before === undefined}>
+            Previous moment
+          </button>
+          <button
+            className={nextReady ? "primary" : ""}
+            onClick={() => after !== undefined && go(after)}
+            disabled={after === undefined}
+          >
+            Next moment
+          </button>
+        </div>
+      )}
       {durationS ? (
         <div className="row small" style={{ marginTop: 8 }}>
           <span className="muted">Frame at {formatTime(t)}</span>
@@ -217,20 +251,38 @@ export function PlayerTagger({
             min={0}
             max={Math.max(0, Math.floor(durationS - 1))}
             value={t}
-            onChange={(e) => {
-              setDraft(null);
-              setT(Number(e.target.value));
-            }}
+            onChange={(e) => go(Number(e.target.value))}
             aria-label="Choose a frame where the players are easy to see"
           />
         </div>
       ) : null}
+      <LabelProgress counts={counts} />
       <TagList tags={tags} onDelete={onDelete} />
       <div className="row" style={{ marginTop: 12 }}>
         <button className="primary" onClick={onDone}>
           Done
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Each player's count towards {LABEL_GOAL} names, e.g. "Maya 3 of 5", and how many players are still unnamed. */
+function LabelProgress({ counts }: { counts: { name: string; count: number }[] }) {
+  const unnamed = Math.max(0, 4 - counts.length);
+  return (
+    <div className="row small" style={{ marginTop: 10, gap: 6 }} aria-label="How often each player is named">
+      {counts.map(({ name, count }) => (
+        <span key={name} className={`badge${count >= LABEL_GOAL ? " done" : ""}`}>
+          {name} {Math.min(count, LABEL_GOAL)} of {LABEL_GOAL}
+          {count >= LABEL_GOAL ? " ✓" : ""}
+        </span>
+      ))}
+      {unnamed > 0 && (
+        <span className="muted">
+          {unnamed === 4 ? "No players named yet" : `${unnamed} more player${unnamed > 1 ? "s" : ""} to name`}
+        </span>
+      )}
     </div>
   );
 }
