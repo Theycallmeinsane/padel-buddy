@@ -25,6 +25,10 @@ class LocalStorage:
     def video_path(self, match_id: str, ext: str) -> Path:
         return self.match_dir(match_id) / f"video{ext}"
 
+    def web_video_path(self, match_id: str) -> Path:
+        """An H.264 copy of the video, made when browsers cannot show the original."""
+        return self.match_dir(match_id) / "video.web.mp4"
+
     def run_dir(self, match_id: str) -> Path:
         return self.match_dir(match_id) / "run"
 

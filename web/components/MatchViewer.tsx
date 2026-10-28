@@ -225,6 +225,13 @@ export default function MatchViewer({
             playsInline
             preload="metadata"
             onLoadedMetadata={(e) => {
+              // A video track the browser can't decode (HEVC in Chrome or Edge on many PCs) raises
+              // no error: the sound plays over a blank picture and the video reports no size.
+              if (source === "full" && e.currentTarget.videoWidth === 0) {
+                setFullFailed(true);
+                if (condensed) setSource("points");
+                return;
+              }
               if (resumeAt.current === null) return;
               const at = toVideoTime(segments, resumeAt.current);
               if (at !== null) e.currentTarget.currentTime = at;
@@ -300,7 +307,8 @@ export default function MatchViewer({
 
       {fullFailed && (
         <p className="muted small">
-          This browser can&apos;t play the original video (iPhone recordings are often HEVC).{" "}
+          This browser can&apos;t show the original video (phone recordings are often HEVC). Padel Buddy is
+          making a copy that plays everywhere; reload this page in a few minutes to watch the full match.{" "}
           {condensed
             ? "Points only plays everywhere."
             : live

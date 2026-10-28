@@ -292,6 +292,21 @@ def media_duration(path: Path) -> float:
         raise audio.AudioError(f"ffprobe could not read {path}: {proc.stderr.strip()}") from e
 
 
+def browser_copy(video: str | Path, dest: Path, crf: int = 23, encoder: str = "auto") -> Path:
+    """The whole video re-encoded to H.264/AAC, for browsers that cannot show the original.
+
+    Written beside ``dest`` and moved over it when finished, so a half-made
+    copy is never served.
+    """
+    tmp = dest.with_name(f".{dest.name}.tmp.mp4")
+    try:
+        _ffmpeg("-i", str(video), *_encode_args(crf, encoder=encoder), str(tmp))
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dest
+
+
 def thumbnail(video: str | Path, at: float, dest: Path, width: int = 480) -> Path:
     _ffmpeg("-ss", f"{at:.3f}", "-i", str(video), "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "3", str(dest))
     return dest

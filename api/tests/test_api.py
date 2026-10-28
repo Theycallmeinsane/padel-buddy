@@ -657,3 +657,17 @@ def test_stopping_who_is_who_keeps_the_finished_results(client, settings, tmp_pa
     m = client.get(f"/matches/{mid}").json()
     assert m["status"] == "done" and m["job"]["status"] == "stopped"
     assert client.get(f"/matches/{mid}/results").json()["tracking"]["names"] == {"P1": "Maya"}
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_full_match_plays_a_browser_copy_of_a_video_browsers_cannot_show(client, settings, tmp_path):
+    m = client.post("/matches", json={"title": "x"}).json()
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4").read_bytes())  # mp4v
+    original = client.get(f"/matches/{m['id']}/video").content
+
+    db, storage, checked = Database(settings.db_url), LocalStorage(settings.data_dir), set()
+    assert worker.make_web_copy(db, storage, checked) is True
+    assert worker.make_web_copy(db, storage, checked) is False  # each video is looked at once
+
+    served = client.get(f"/matches/{m['id']}/video").content
+    assert served != original and served == storage.web_video_path(m["id"]).read_bytes()

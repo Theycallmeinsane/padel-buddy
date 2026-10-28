@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import threading
 import time
 
@@ -53,3 +55,20 @@ def test_encoder_choice(monkeypatch):
     assert h264_args(23)[:2] == ["-c:v", "libx264"]
     monkeypatch.setattr(video, "nvenc_available", lambda: True)
     assert h264_args(23)[:2] == ["-c:v", "h264_nvenc"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_a_video_browsers_cannot_show_gets_an_h264_copy(tmp_path):
+    from padel_engine.clips import browser_copy
+
+    hevc = tmp_path / "phone.mov"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=1",
+         "-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx265", "-c:a", "aac", "-tag:v", "hvc1", str(hevc)],
+        check=True,
+    )
+    assert not video.plays_in_browsers(hevc)
+
+    copy = browser_copy(hevc, tmp_path / "video.web.mp4", encoder="libx264")
+    assert video.plays_in_browsers(copy)
+    assert not list(tmp_path.glob(".*tmp*"))

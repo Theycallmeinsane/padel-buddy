@@ -17,6 +17,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import jobs
@@ -132,6 +133,38 @@ def run_once(
         return True
 
 
+def make_web_copy(db: Database, storage: LocalStorage, checked: set[str]) -> bool:
+    """Make one missing browser copy of an uploaded video. Returns whether one was made.
+
+    Phone videos are often HEVC, which many browsers play as sound over a
+    blank picture, so the app's "Full match" plays an H.264 copy instead.
+    The worker makes it while it has no jobs; ``checked`` holds the matches
+    already looked at, so each video is probed once.
+    """
+    from padel_engine.clips import browser_copy
+    from padel_engine.video import plays_in_browsers
+
+    with db.sessions() as session:
+        matches = session.execute(
+            select(Match.id, Match.video_ext).where(Match.status.not_in(("created", "uploading", "failed")))
+        ).all()
+    for match_id, ext in matches:
+        if match_id in checked:
+            continue
+        checked.add(match_id)
+        video, web = storage.video_path(match_id, ext), storage.web_video_path(match_id)
+        if web.exists() or not video.exists() or plays_in_browsers(video):
+            continue
+        log.info("making a browser copy of match %s's video", match_id)
+        try:
+            browser_copy(video, web)
+        except Exception:  # the match may be deleted meanwhile; the original still plays where it can
+            log.error("browser copy of match %s failed:\n%s", match_id, traceback.format_exc())
+            return False
+        return True
+    return False
+
+
 def run_forever(settings: Settings, stop: threading.Event) -> None:
     """Poll for jobs until ``stop`` is set (checked between jobs)."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)  # the worker may start before the API
@@ -142,13 +175,14 @@ def run_forever(settings: Settings, stop: threading.Event) -> None:
     db.create_all()
     storage = LocalStorage(settings.data_dir)
     name = f"{socket.gethostname()}:{id(db)}"
+    checked: set[str] = set()
 
     log.info("worker %s polling %s", name, settings.db_url.split("@")[-1])
     while not stop.is_set():
         with db.sessions() as s:
             if n := jobs.requeue_stale(s, settings.stale_job_s):
                 log.warning("re-queued %d stale job(s)", n)
-        if not run_once(db, storage, name):
+        if not run_once(db, storage, name) and not make_web_copy(db, storage, checked):
             stop.wait(settings.worker_poll_s)
 
 

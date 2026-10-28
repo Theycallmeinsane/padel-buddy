@@ -209,7 +209,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = storage.video_path(match.id, match.video_ext)
         if not _uploaded(match) or not path.exists():
             raise HTTPException(404, "Video not uploaded yet")
-        return FileResponse(path)
+        web = storage.web_video_path(match.id)
+        return FileResponse(web if web.exists() else path)
 
     # -- calibration ------------------------------------------------------
 
