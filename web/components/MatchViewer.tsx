@@ -158,7 +158,11 @@ export default function MatchViewer({
   function startTagging(on: boolean) {
     setTagging(on);
     setDraft(null);
-    setHint(on ? "Pause where you can see the player, then click their box." : null);
+    setHint(
+      on
+        ? "Pause where you can see the player, then click their box and give their name. If a box has the wrong name, give the right one: who is who is worked out again from there."
+        : null,
+    );
     if (on) videoRef.current?.pause();
   }
 
@@ -201,7 +205,7 @@ export default function MatchViewer({
         </h2>
         {overlay && onTag && (
           <button className={tagging ? "primary" : ""} onClick={() => startTagging(!tagging)}>
-            {tagging ? "Done naming" : "Name a player"}
+            {tagging ? "Done naming" : "Name or fix a player"}
           </button>
         )}
         {condensed && (
