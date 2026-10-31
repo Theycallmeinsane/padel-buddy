@@ -379,7 +379,10 @@ export class Api {
   // `version` changes when an output is rewritten under the same name (live results), so the browser fetches it again.
   fileUrl = (id: string, rel: string, version?: string) =>
     this.media(`/matches/${id}/files/${rel}${version ? `?v=${encodeURIComponent(version)}` : ""}`);
-  videoUrl = (id: string) => this.media(`/matches/${id}/video`);
+  // `?play=1` keeps it apart from what browsers cached before the browser copy existed (the original
+  // under the same address), which they would otherwise keep playing as sound over a black picture.
+  // `retry` asks again after a failed try, which the browser would otherwise answer from memory.
+  videoUrl = (id: string, retry = 0) => this.media(`/matches/${id}/video?play=1${retry ? `&retry=${retry}` : ""}`);
   // Downloads: the uploaded file itself, and outputs cut from it without re-encoding.
   originalVideoUrl = (id: string) => this.media(`/matches/${id}/video?download=1`);
   originalUrl = (id: string, rel: string) => this.media(`/matches/${id}/original/${rel}`);

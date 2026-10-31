@@ -669,8 +669,9 @@ def test_full_match_plays_a_browser_copy_of_a_video_browsers_cannot_show(client,
     assert worker.make_web_copy(db, storage, checked) is True
     assert worker.make_web_copy(db, storage, checked) is False  # each video is looked at once
 
-    served = client.get(f"/matches/{m['id']}/video").content
-    assert served != original and served == storage.web_video_path(m["id"]).read_bytes()
+    r = client.get(f"/matches/{m['id']}/video")
+    assert r.content != original and r.content == storage.web_video_path(m["id"]).read_bytes()
+    assert r.headers["cache-control"] == "no-cache"  # a browser holding the original must check again
 
 
 def test_no_browser_copy_when_the_disk_is_nearly_full(client, settings, tmp_path, monkeypatch, caplog):

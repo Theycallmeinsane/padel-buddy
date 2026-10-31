@@ -75,6 +75,7 @@ export default function MatchViewer({
 
   const [source, setSource] = useState<Source>(condensed ? "points" : "full");
   const [fullFailed, setFullFailed] = useState(false);
+  const [fullTries, setFullTries] = useState(0); // goes up each time Full match is tried again after failing
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [overlayError, setOverlayError] = useState<string | null>(null);
   const [ball, setBall] = useState<BallTrack | null>(null);
@@ -189,13 +190,18 @@ export default function MatchViewer({
   }
 
   function switchTo(next: Source) {
+    if (next === "full" && fullFailed) {
+      // The browser copy may be ready now: try again.
+      setFullFailed(false);
+      setFullTries(fullTries + 1);
+    }
     resumeAt.current = matchTime;
     setSource(next);
   }
 
   const point = rallies.find((r) => r.start_s - 2 <= matchTime && matchTime <= r.end_s + 2);
   const ending = point ? endings.get(point.index) : undefined;
-  const src = source === "points" && condensed ? api.fileUrl(matchId, condensed) : api.videoUrl(matchId);
+  const src = source === "points" && condensed ? api.fileUrl(matchId, condensed) : api.videoUrl(matchId, fullTries);
 
   return (
     <section className="card">
@@ -213,7 +219,7 @@ export default function MatchViewer({
             <button className={source === "points" ? "on" : ""} onClick={() => switchTo("points")}>
               Points only{clips?.condensed_s ? ` · ${formatTime(clips.condensed_s)}` : ""}
             </button>
-            <button className={source === "full" ? "on" : ""} onClick={() => switchTo("full")} disabled={fullFailed}>
+            <button className={source === "full" ? "on" : ""} onClick={() => switchTo("full")}>
               Full match
             </button>
           </div>
