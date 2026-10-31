@@ -58,7 +58,7 @@ export default function Points({
                 <span className="ending">{endingLabel(ending, names)}</span>
               </span>
               {r.clip ? (
-                <a className="small" href={api.fileUrl(matchId, r.clip)} download={r.clip.split("/").pop()}>
+                <a className="small" href={api.originalUrl(matchId, r.clip)} download>
                   Download
                 </a>
               ) : (

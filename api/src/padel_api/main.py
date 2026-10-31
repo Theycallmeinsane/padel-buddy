@@ -26,6 +26,7 @@ one process for use on your own computer.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import re
 import secrets
@@ -205,11 +206,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _upload_status(match)
 
     @app.get("/matches/{match_id}/video", dependencies=auth)
-    def get_video(match: Match = Depends(load_match)) -> FileResponse:
+    def get_video(match: Match = Depends(load_match), download: bool = False) -> FileResponse:
+        """The match to watch, or with ``download`` the original file exactly as it was uploaded."""
         path = storage.video_path(match.id, match.video_ext)
         if not _uploaded(match) or not path.exists():
             raise HTTPException(404, "Video not uploaded yet")
-        return FileResponse(path)
+        if download:
+            return FileResponse(path, filename=f"{_file_title(match.title)}{match.video_ext}")
+        web = storage.web_video_path(match.id)
+        return FileResponse(web if web.exists() else path)
+
+    @app.get("/matches/{match_id}/original/{rel:path}", dependencies=auth)
+    def original_output(rel: str, match: Match = Depends(load_match)) -> FileResponse:
+        """A clip, point, highlight reel or condensed match cut from the original video without re-encoding.
+
+        The app's own copies are re-encoded to H.264 so every browser plays
+        them; downloads come from here instead, at the camera's quality. Cut
+        on first request and kept in the run folder.
+        """
+        from padel_engine.clips import original_cut
+
+        video = storage.video_path(match.id, match.video_ext)
+        found = {n: storage.run_file(match.id, f"{n}.json") for n in ("clips", "report")}
+        spans = _original_spans(*(json.loads(f.read_bytes()) if f else {} for f in found.values()), rel)
+        if not spans or not video.exists():
+            raise HTTPException(404, "No such output")
+        stem = Path(rel).stem
+        key = hashlib.sha1(repr(spans).encode()).hexdigest()[:10]  # live results can move a point
+        dest = storage.run_dir(match.id) / "originals" / f"{stem}-{key}{match.video_ext}"
+        if not dest.exists():
+            original_cut(video, spans, dest)
+        return FileResponse(dest, filename=f"{stem}{match.video_ext}")
 
     # -- calibration ------------------------------------------------------
 
@@ -531,6 +558,34 @@ def _finish_upload(match: Match, path: Path) -> None:
 
 def _upload_status(match: Match) -> UploadStatus:
     return UploadStatus(received=match.video_received, total=match.video_size, complete=_uploaded(match))
+
+
+def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, float]] | None:
+    """Where in the match an output of clips.json or report.json comes from, as (start, end) spans."""
+    from padel_engine.report import reel_spans
+    from padel_engine.schemas import PlayerMoment
+
+    for p in report.get("players", []):
+        for file, moments in ((p.get("reel"), p.get("highlights")), (p.get("winners_reel"), p.get("winning_shots"))):
+            if file == rel and moments:
+                return reel_spans([PlayerMoment.model_validate(m) for m in moments])
+    if rel == clips.get("highlights"):
+        return [(a, b) for a, b in clips.get("highlight_segments", [])]
+    condensed = [(a, b) for a, b, *_ in clips.get("condensed_segments", [])]
+    if rel == clips.get("condensed"):
+        return condensed
+    for c in clips.get("clips", []):
+        if c["file"] == rel:
+            return [(c["start_s"], c["end_s"])]
+    for r in clips.get("rallies", []):
+        if r.get("clip") == rel:  # points close together share one clip: the segment holding the first
+            pad = (max(0.0, r["start_s"] - 2.0), r["end_s"] + 2.0)  # while live, before the segments are known
+            return [next(((a, b) for a, b in condensed if a <= r["start_s"] <= b), pad)]
+    return None
+
+
+def _file_title(title: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]+', "", title).strip() or "match"
 
 
 def _new_tag(body: TagIn, name: str, applied: bool | None, not_player: bool = False) -> dict:

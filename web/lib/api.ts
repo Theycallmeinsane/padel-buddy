@@ -380,6 +380,9 @@ export class Api {
   fileUrl = (id: string, rel: string, version?: string) =>
     this.media(`/matches/${id}/files/${rel}${version ? `?v=${encodeURIComponent(version)}` : ""}`);
   videoUrl = (id: string) => this.media(`/matches/${id}/video`);
+  // Downloads: the uploaded file itself, and outputs cut from it without re-encoding.
+  originalVideoUrl = (id: string) => this.media(`/matches/${id}/video?download=1`);
+  originalUrl = (id: string, rel: string) => this.media(`/matches/${id}/original/${rel}`);
   // Tags and live results rewrite these in place, so always check they are current.
   overlay = (id: string, rel: string) => this.request<Overlay>(`/matches/${id}/files/${rel}`, { cache: "no-cache" });
   ballTrack = (id: string, rel: string) =>

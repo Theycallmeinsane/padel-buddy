@@ -173,6 +173,24 @@ def make_browser_friendly(src: Path) -> Path:
     return src
 
 
+def plays_in_browsers(path: str | Path) -> bool:
+    """Whether every browser can show this file's picture, not just play its sound.
+
+    Phones often record HEVC (H.265), which Chrome and Edge on many Windows
+    PCs cannot decode: they play the audio over a blank picture without any
+    error. 8-bit H.264 plays everywhere. Without ffprobe, assume it plays.
+    """
+    if shutil.which("ffprobe") is None:
+        return True
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    codec, _, pix_fmt = proc.stdout.strip().partition(",")
+    return codec == "h264" and pix_fmt in ("yuv420p", "yuvj420p")
+
+
 def h264_args(crf: int, encoder: str = "auto") -> list[str]:
     """FFmpeg arguments for H.264 video that plays in any browser or phone.
 
