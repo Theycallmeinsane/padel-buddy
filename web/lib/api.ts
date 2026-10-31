@@ -48,10 +48,18 @@ export type Tag = {
 export type TagIn = Omit<Tag, "id" | "applied">;
 
 /**
- * Who is who put right by hand: from `start_s` to `end_s` (null: the end of the
- * match) the player shown as `player` is really `becomes`, so the two swap there.
+ * Who is who put right by hand: from `start_s` the player shown as `player` is
+ * really `becomes`, so the two swap. It lasts until `end_s`, or with no end
+ * until the tracking next switches either of them, or with `to_end` to the end of the match.
  */
-export type Fix = { id: string; start_s: number; end_s: number | null; player: string; becomes: string };
+export type Fix = {
+  id: string;
+  start_s: number;
+  end_s: number | null;
+  player: string;
+  becomes: string;
+  to_end?: boolean;
+};
 export type FixIn = Omit<Fix, "id">;
 
 export type UploadStatus = { received: number; total: number | null; complete: boolean };

@@ -237,8 +237,8 @@ def test_a_fix_renames_a_player_from_a_moment_on_and_taking_it_back_undoes_it(tm
     plain = read_tracks(run / "tracks.csv")
     summary = json.loads((run / "summary.json").read_text())
 
-    # "From 6 s on, the one shown as P1 is really P3."
-    relabel(run, calib, [], cfg, [Fix(6.0, None, "P1", "P3")])
+    # "From 6 s to the end, the one shown as P1 is really P3."
+    relabel(run, calib, [], cfg, [Fix(6.0, None, "P1", "P3", to_end=True)])
     fixed = read_tracks(run / "tracks.csv")
     assert len(fixed) == len(plain)
     swap = {"P1": "P3", "P3": "P1"}

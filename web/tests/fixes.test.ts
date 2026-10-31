@@ -21,7 +21,8 @@ describe("putting a player right by hand", () => {
   it("says what a fix does", () => {
     const names = { P1: "Maya", P3: "Ali" };
     const fix: Fix = { id: "a", start_s: 750, end_s: null, player: "P1", becomes: "P3" };
-    expect(fixSummary(fix, names, clock)).toBe("From 12:30 to the end: Maya is really Ali");
+    expect(fixSummary(fix, names, clock)).toBe("From 12:30 until tracking switches them: Maya is really Ali");
+    expect(fixSummary({ ...fix, to_end: true }, names, clock)).toBe("From 12:30 to the end: Maya is really Ali");
     expect(fixSummary({ ...fix, end_s: 800, becomes: "P4" }, names, clock)).toBe(
       "From 12:30 to 13:20: Maya is really P4",
     );

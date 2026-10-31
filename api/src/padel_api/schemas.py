@@ -50,9 +50,12 @@ class FixIn(BaseModel):
     """The fallback when tags can't settle it: from a moment on, the player shown as one number is another."""
 
     start_s: float = Field(..., ge=0, description="Match time the mix-up starts, in seconds")
-    end_s: float | None = Field(None, description="Match time it ends; none for the rest of the match")
+    end_s: float | None = Field(
+        None, description="Match time it ends; none for where the tracking next switches either of them"
+    )
     player: str = Field(..., description="The player shown there (P1-P4)")
     becomes: str = Field(..., description="Who it really is (P1-P4); the two swap in that stretch")
+    to_end: bool = Field(False, description="Without an end: to the end of the match instead")
 
 
 class FixOut(BaseModel):
@@ -61,6 +64,7 @@ class FixOut(BaseModel):
     end_s: float | None
     player: str
     becomes: str
+    to_end: bool = False
 
 
 class LiveOut(BaseModel):

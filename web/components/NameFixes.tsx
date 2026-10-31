@@ -26,6 +26,7 @@ export function FixPanel({
 }) {
   const [start, setStart] = useState(formatTime(now));
   const [end, setEnd] = useState("");
+  const [toEnd, setToEnd] = useState(false);
   const [player, setPlayer] = useState("");
   const [becomes, setBecomes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -34,13 +35,13 @@ export function FixPanel({
   const endS = end.trim() ? parseTime(end) : null;
   const badEnd = end.trim() !== "" && endS === null;
   const problem = badEnd
-    ? "Type the end as minutes:seconds, or leave it empty for the rest of the match"
+    ? "Type the end as minutes:seconds, or leave it empty"
     : fixProblem(startS, endS, player, becomes);
 
   async function save() {
     if (problem || startS === null) return;
     setSaving(true);
-    const failed = await onSave({ start_s: startS, end_s: endS, player, becomes });
+    const failed = await onSave({ start_s: startS, end_s: endS, player, becomes, to_end: toEnd && endS === null });
     setSaving(false);
     if (failed) setError(failed);
     else onClose();
@@ -68,9 +69,10 @@ export function FixPanel({
       onKeyDown={(e) => e.key === "Escape" && onClose()}
     >
       <p className="small muted" style={{ marginTop: 0 }}>
-        Names on the wrong player from some point on? Pause where it goes wrong and say who it really is. The
-        two players swap from there, to the end of the match or to the time you give. Nothing else changes, and
-        × takes it back.
+        Names on the wrong players from some point on? Pause where it goes wrong and say who it really is. The
+        two swap from there until the tracking next switches either of them, since it is often right again
+        after that. Give an end time, or tick to the end of the match, to change that. Nothing else changes,
+        and × takes it back.
       </p>
       <div className="row small">
         <label>
@@ -93,15 +95,27 @@ export function FixPanel({
             type="text"
             inputMode="numeric"
             size={7}
-            placeholder="the end"
+            placeholder={toEnd ? "the end" : "auto"}
+            disabled={toEnd}
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            aria-label="End, minutes:seconds, empty for the rest of the match"
+            aria-label="End, minutes:seconds; empty to stop where the tracking switches them"
           />
         </label>
-        <button type="button" onClick={() => setEnd(formatTime(now))}>
+        <button type="button" onClick={() => setEnd(formatTime(now))} disabled={toEnd}>
           Now
         </button>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={toEnd}
+            onChange={(e) => {
+              setToEnd(e.target.checked);
+              if (e.target.checked) setEnd("");
+            }}
+          />
+          to the end of the match
+        </label>
       </div>
       <div className="row small" style={{ marginTop: 8 }}>
         <label>

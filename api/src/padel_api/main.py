@@ -13,7 +13,7 @@ Flow for one match:
     PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
     POST /matches/{id}/tags               name the person at a spot at a moment (fixes mix-ups too)
     DELETE /matches/{id}/tags/{tag}       take a tag back
-    POST /matches/{id}/fixes              fallback: from a moment on, the player shown as P1 is really P3
+    POST /matches/{id}/fixes              fallback: from a moment, the player shown as P1 is really P3
     DELETE /matches/{id}/fixes/{fix}      take a fix back
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
@@ -423,11 +423,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/matches/{match_id}/fixes", status_code=201, dependencies=auth)
     def add_fix(body: FixIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
-        """Put who is who right by hand, from a moment on (or for a stretch), when tags can't.
+        """Put who is who right by hand, from a moment, when tags can't.
 
         The player shown as ``player`` there is really ``becomes``: the two
-        numbers swap in that stretch, so each name follows its person again.
-        It overrides the tracking and the tags, and is applied in the
+        numbers swap, so each name follows its person again, until the
+        tracking next switches either of them (it may be right again from
+        there), or until ``end_s``, or with ``to_end`` to the end of the
+        match. It overrides the tracking and the tags, and is applied in the
         background like a tag; taking it back undoes it.
         """
         if body.player not in PLAYER_IDS or body.becomes not in PLAYER_IDS:
@@ -442,7 +444,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         fix = {
             "id": new_id()[:12], "start_s": round(body.start_s, 3),
             "end_s": None if body.end_s is None else round(body.end_s, 3),
-            "player": body.player, "becomes": body.becomes, "created_at": now().isoformat(),
+            "player": body.player, "becomes": body.becomes, "to_end": body.to_end and body.end_s is None,
+            "created_at": now().isoformat(),
         }
         match.fixes = [*(match.fixes or []), fix]
         session.commit()

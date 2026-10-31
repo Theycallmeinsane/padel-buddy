@@ -1,5 +1,5 @@
 from padel_engine.players import NOT_A_PLAYER
-from padel_engine.tags import Fix, Tag, apply_fixes, find_segment, resolve
+from padel_engine.tags import Fix, Tag, apply_fixes, find_segment, fix_end, resolve
 
 
 def row(t, box, segment):
@@ -61,29 +61,47 @@ def test_a_tag_can_say_someone_is_not_a_player():
     assert not Tag.from_dict({"time_s": 1, "x": 2, "y": 3, "name": "Maya"}).not_player
 
 
-def test_a_fix_swaps_two_players_from_a_moment_on():
-    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P2", "P3", "-")]
-    who = lambda t: {r["player"] for r in rows if r["time_s"] == t}  # noqa: E731
-
-    # From 3 s on, the player shown as P1 is really P2: the two swap there, nobody else moves.
-    assert apply_fixes(rows, [Fix(3.0, None, "P1", "P2")]) == 6
-    before = [r["player"] for r in rows if r["time_s"] < 3]
-    assert before == ["P1", "P2", "P3", "-"] * 3
-    assert [r["player"] for r in rows if r["time_s"] == 3] == ["P2", "P1", "P3", "-"]
-    assert all(who(t) == {"P1", "P2", "P3", "-"} for t in range(6))  # never one number on two people
+def _rows(pieces):
+    """Rows from {player: [(segment, first s, last s), ...]}, one per second."""
+    return [
+        {"time_s": float(t), "player": pid, "segment": seg}
+        for pid, spans in pieces.items() for seg, a, b in spans for t in range(a, b + 1)
+    ]
 
 
-def test_a_fix_can_cover_a_stretch_and_fixes_build_on_each_other():
-    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P3")]
-    shown = lambda: [r["player"] for r in rows if r["time_s"] in (0.0, 2.0, 4.0)]  # noqa: E731
+def test_a_fix_stops_where_the_tracking_switches_them_again():
+    # The tracking mixed P1 and P2 up at 3 s, and switched them back itself at 6 s (new pieces).
+    pieces = {"P1": [(0, 0, 5), (4, 6, 9)], "P2": [(1, 0, 5), (5, 6, 9)], "P3": [(2, 0, 9)], "-": [(3, 0, 9)]}
+    who = lambda rows, t: sorted(r["player"] for r in rows if r["time_s"] == t)  # noqa: E731
+    seg_at = lambda rows, t, pid: next(r["segment"] for r in rows if r["time_s"] == t and r["player"] == pid)  # noqa: E731
 
-    apply_fixes(rows, [Fix(2.0, 4.0, "P1", "P3")])  # the end is not included
-    assert shown() == ["P1", "P3", "P3", "P1", "P1", "P3"]
+    rows = _rows(pieces)
+    fix = Fix(3.0, None, "P1", "P2")
+    assert fix_end(rows, fix) == 5.0
+    assert apply_fixes(rows, [fix]) == 6  # 3, 4 and 5 s, two rows each
+    assert seg_at(rows, 2, "P1") == 0 and seg_at(rows, 3, "P1") == 1 and seg_at(rows, 5, "P2") == 0
+    assert seg_at(rows, 6, "P1") == 4  # where the tracking switched back, it is left alone
+    assert all(who(rows, t) == ["-", "P1", "P2", "P3"] for t in range(10))  # never one number on two people
 
-    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P3", "P4")]
+    # To the end of the match when asked, or to a given time (not included).
+    rows = _rows(pieces)
+    apply_fixes(rows, [Fix(3.0, None, "P1", "P2", to_end=True)])
+    assert seg_at(rows, 9, "P1") == 5 and seg_at(rows, 2, "P1") == 0
+    rows = _rows(pieces)
+    apply_fixes(rows, [Fix(3.0, 4.0, "P1", "P2")])
+    assert seg_at(rows, 3, "P1") == 1 and seg_at(rows, 4, "P1") == 0
+
+    # Someone not shown at that moment: their piece from when they next show up counts.
+    rows = _rows({"P1": [(0, 0, 9)], "P4": [(1, 5, 7)]})
+    assert fix_end(rows, Fix(2.0, None, "P1", "P4")) == 7.0
+    assert fix_end(rows, Fix(2.0, None, "P2", "P3")) == 2.0  # neither shows: nothing to swap
+
+
+def test_fixes_build_on_each_other():
+    rows = _rows({"P1": [(0, 0, 5)], "P3": [(1, 0, 5)], "P4": [(2, 0, 5)]})
     # P1 -> P3 from 2 s, then from 4 s the one now shown as P3 is P4: they chain.
     apply_fixes(rows, [Fix(2.0, None, "P1", "P3"), Fix(4.0, None, "P3", "P4")])
-    at4 = [r["player"] for r in rows if r["time_s"] == 4.0]
-    assert at4 == ["P4", "P1", "P3"]
+    assert {r["segment"]: r["player"] for r in rows if r["time_s"] == 4.0} == {0: "P4", 1: "P1", 2: "P3"}
     assert apply_fixes(rows, [Fix(0.0, None, "P2", "P2")]) == 0  # the same number: nothing to do
     assert Fix.from_dict({"start_s": 1, "end_s": None, "player": "P1", "becomes": "P2"}) == Fix(1.0, None, "P1", "P2")
+    assert Fix.from_dict({"start_s": 1, "player": "P1", "becomes": "P2", "to_end": True}).to_end
