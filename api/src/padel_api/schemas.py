@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def _utc(d: datetime) -> datetime:
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+# Times are stored in UTC, but SQLite gives them back without a zone, which
+# browsers would read as local time. Sent with the zone, they show correctly.
+UTCDateTime = Annotated[datetime, AfterValidator(_utc)]
 
 
 class MatchCreate(BaseModel):
@@ -19,9 +29,9 @@ class JobOut(BaseModel):
     status: str
     progress: float
     error: str | None
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    created_at: UTCDateTime
+    started_at: UTCDateTime | None
+    finished_at: UTCDateTime | None
 
 
 class TagIn(BaseModel):
@@ -56,7 +66,7 @@ class LiveOut(BaseModel):
 class MatchOut(BaseModel):
     id: str
     title: str
-    created_at: datetime
+    created_at: UTCDateTime
     status: str
     video_size: int | None
     video_received: int
@@ -100,7 +110,7 @@ class PlayerOut(BaseModel):
 
     match_id: str
     match_title: str
-    match_date: datetime
+    match_date: UTCDateTime
     player: str
     name: str | None
     team: str | None

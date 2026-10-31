@@ -276,7 +276,7 @@ export default function MatchViewer({
         <span className="grow muted">
           {formatTime(matchTime)}
           {point
-            ? ` · point ${point.index + 1} of ${rallies.length} · ${point.hits} shots${best.has(point.index) ? " · one of the best" : ""}${ending ? endingText(ending, names) : ""}`
+            ? ` · point ${point.index + 1} of ${rallies.length} · ${ending?.shots ?? point.hits} shots${best.has(point.index) ? " · one of the best" : ""}${ending ? endingText(ending, names) : ""}`
             : ""}
         </span>
         {overlay &&
@@ -589,7 +589,7 @@ function Timeline({
             opacity: 0.35 + 0.65 * r.score,
             borderBottom: endings.get(r.index)?.won_by ? `3px solid ${TEAM_COLORS[endings.get(r.index)!.won_by!]}` : undefined,
           }}
-          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
+          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${endings.get(r.index)?.shots ?? r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
             endings.get(r.index)?.won_by ? `, won by team ${endings.get(r.index)!.won_by}` : ""
           }`}
           aria-label={`Play point ${r.index + 1} at ${formatTime(r.start_s)}`}
