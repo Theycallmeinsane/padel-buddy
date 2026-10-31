@@ -46,6 +46,23 @@ class TagOut(BaseModel):
     not_player: bool = False
 
 
+class FixIn(BaseModel):
+    """The fallback when tags can't settle it: from a moment on, the player shown as one number is another."""
+
+    start_s: float = Field(..., ge=0, description="Match time the mix-up starts, in seconds")
+    end_s: float | None = Field(None, description="Match time it ends; none for the rest of the match")
+    player: str = Field(..., description="The player shown there (P1-P4)")
+    becomes: str = Field(..., description="Who it really is (P1-P4); the two swap in that stretch")
+
+
+class FixOut(BaseModel):
+    id: str
+    start_s: float
+    end_s: float | None
+    player: str
+    becomes: str
+
+
 class LiveOut(BaseModel):
     """Results published while the match is analysed (or before it failed) cover the video up to here."""
 
@@ -65,6 +82,7 @@ class MatchOut(BaseModel):
     error: str | None
     player_names: dict[str, str] = {}
     tags: list[TagOut] = []
+    fixes: list[FixOut] = []
     job: JobOut | None = None  # the latest analysis job
     live: LiveOut | None = None  # while analysing: how far the results so far reach
 

@@ -11,6 +11,12 @@ the earlier tag, which is then reported as not applied.
 A tag can instead say the person there is not a player, such as a ball
 fetcher the tracking took for one: their piece is pinned to
 ``NOT_A_PLAYER``, and it needs no name.
+
+A fix is the fallback for when tags can't settle it: "from this moment (to
+that one, or the end), the player shown as P2 is really P3". It overrides
+whatever the tracking and the tags decided, row by row, by swapping the two
+numbers in that stretch. Names stay with their numbers, so the name follows
+the person again.
 """
 
 from __future__ import annotations
@@ -40,6 +46,41 @@ class Tag:
         return cls(
             float(d["time_s"]), float(d["x"]), float(d["y"]), str(d["name"]), bool(d.get("not_player", False))
         )
+
+
+@dataclass(frozen=True)
+class Fix:
+    """From ``start_s`` to ``end_s`` (None: the end of the match) the player shown as ``player`` is ``becomes``."""
+
+    start_s: float
+    end_s: float | None
+    player: str
+    becomes: str
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Fix:
+        end = d.get("end_s")
+        return cls(float(d["start_s"]), None if end is None else float(end), str(d["player"]), str(d["becomes"]))
+
+    def covers(self, t: float) -> bool:
+        return self.start_s <= t and (self.end_s is None or t < self.end_s)
+
+
+def apply_fixes(rows: list[dict], fixes: list[Fix]) -> int:
+    """Swap the two players of each fix in its stretch, in order, so a later fix builds on an earlier one.
+
+    Rows of people who are not players are left alone. Returns how many rows changed.
+    """
+    changed = 0
+    for fix in fixes:
+        if fix.player == fix.becomes:
+            continue
+        swap = {fix.player: fix.becomes, fix.becomes: fix.player}
+        for row in rows:
+            if row["player"] in swap and fix.covers(row["time_s"]):
+                row["player"] = swap[row["player"]]
+                changed += 1
+    return changed
 
 
 @dataclass

@@ -1,5 +1,5 @@
 from padel_engine.players import NOT_A_PLAYER
-from padel_engine.tags import Tag, find_segment, resolve
+from padel_engine.tags import Fix, Tag, apply_fixes, find_segment, resolve
 
 
 def row(t, box, segment):
@@ -59,3 +59,31 @@ def test_a_tag_can_say_someone_is_not_a_player():
     assert found.pins == {2: NOT_A_PLAYER} and found.names == {} and found.unmatched == [0]
     assert Tag.from_dict({"time_s": 1, "x": 2, "y": 3, "name": "", "not_player": True}).not_player
     assert not Tag.from_dict({"time_s": 1, "x": 2, "y": 3, "name": "Maya"}).not_player
+
+
+def test_a_fix_swaps_two_players_from_a_moment_on():
+    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P2", "P3", "-")]
+    who = lambda t: {r["player"] for r in rows if r["time_s"] == t}  # noqa: E731
+
+    # From 3 s on, the player shown as P1 is really P2: the two swap there, nobody else moves.
+    assert apply_fixes(rows, [Fix(3.0, None, "P1", "P2")]) == 6
+    before = [r["player"] for r in rows if r["time_s"] < 3]
+    assert before == ["P1", "P2", "P3", "-"] * 3
+    assert [r["player"] for r in rows if r["time_s"] == 3] == ["P2", "P1", "P3", "-"]
+    assert all(who(t) == {"P1", "P2", "P3", "-"} for t in range(6))  # never one number on two people
+
+
+def test_a_fix_can_cover_a_stretch_and_fixes_build_on_each_other():
+    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P3")]
+    shown = lambda: [r["player"] for r in rows if r["time_s"] in (0.0, 2.0, 4.0)]  # noqa: E731
+
+    apply_fixes(rows, [Fix(2.0, 4.0, "P1", "P3")])  # the end is not included
+    assert shown() == ["P1", "P3", "P3", "P1", "P1", "P3"]
+
+    rows = [{"time_s": float(t), "player": p} for t in range(6) for p in ("P1", "P3", "P4")]
+    # P1 -> P3 from 2 s, then from 4 s the one now shown as P3 is P4: they chain.
+    apply_fixes(rows, [Fix(2.0, None, "P1", "P3"), Fix(4.0, None, "P3", "P4")])
+    at4 = [r["player"] for r in rows if r["time_s"] == 4.0]
+    assert at4 == ["P4", "P1", "P3"]
+    assert apply_fixes(rows, [Fix(0.0, None, "P2", "P2")]) == 0  # the same number: nothing to do
+    assert Fix.from_dict({"start_s": 1, "end_s": None, "player": "P1", "becomes": "P2"}) == Fix(1.0, None, "P1", "P2")

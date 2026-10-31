@@ -35,7 +35,7 @@ from .players import (
     repair_identities, save_segments,
 )
 from .schemas import CalibrationMeta, PlayerStats, TrackingSummary, VideoMeta
-from .tags import Resolved, Tag, resolve
+from .tags import Fix, Resolved, Tag, apply_fixes, resolve
 from .video import batched, iter_frames, make_browser_friendly, prefetch, probe, stride_for
 
 TRACK_COLUMNS = [
@@ -59,8 +59,11 @@ def run_tracking(
     tags: list[Tag] | None = None,
     on_chunk: ChunkFn | None = None,
     smooth_cache: analytics.SmoothCache | None = None,
+    fixes: list[Fix] | None = None,
 ) -> TrackingSummary:
     """Track the four players through the video; ``tags`` name them and fix who is who where they land.
+
+    ``fixes`` then override who is who in the stretches they cover (see ``tags.py``).
 
     With ``on_chunk``, the stats, heatmaps and overlay so far are written
     after every ``live.every_s`` seconds of video, with who is who as it
@@ -139,7 +142,7 @@ def run_tracking(
             if on_progress and analysed % 25 == 0:
                 on_progress(min(share * analysed / total, 0.99))
         if on_chunk is not None and analysed and t >= due:
-            found = label_rows(rows, assigner.segments, tags or [], cfg)
+            found = label_rows(rows, assigner.segments, tags or [], cfg, fixes)
             _summarise(out, players_only(rows), analysed, fps, calib, video, cfg, dict(outputs), found, smooth_cache)
             on_chunk(t, players_only(rows))
             due = (math.floor(t / cfg.live.every_s) + 1) * cfg.live.every_s
@@ -147,7 +150,7 @@ def run_tracking(
     # Who is who is only settled once the repair has seen the whole match, so
     # every output is written from here on.
     save_segments(out / "segments.json", assigner.segments)
-    found = label_rows(rows, assigner.segments, tags or [], cfg)
+    found = label_rows(rows, assigner.segments, tags or [], cfg, fixes)
     write_rows(out, rows)
     rows = players_only(rows)
 
@@ -167,9 +170,13 @@ def run_tracking(
 
 
 def relabel(
-    out_dir: str | Path, calibration: Calibration, tags: list[Tag], config: EngineConfig | None = None
+    out_dir: str | Path,
+    calibration: Calibration,
+    tags: list[Tag],
+    config: EngineConfig | None = None,
+    fixes: list[Fix] | None = None,
 ) -> TrackingSummary:
-    """Decide again who is who in a tracked run folder, with ``tags``, without tracking again.
+    """Decide again who is who in a tracked run folder, with ``tags`` and ``fixes``, without tracking again.
 
     Rewrites tracks.csv, the stats, heatmaps and overlay. Shots and the
     report are built from those, so they need running again afterwards
@@ -182,7 +189,7 @@ def relabel(
     rows = read_tracks(out / "tracks.csv")
     if (out / NOT_PLAYERS_CSV).exists():
         rows += read_tracks(out / NOT_PLAYERS_CSV)
-    found = label_rows(rows, segments, tags, cfg)
+    found = label_rows(rows, segments, tags, cfg, fixes)
     write_rows(out, rows)
     # The preview video has the old numbers burnt in.
     outputs = {k: v for k, v in old.outputs.items() if k != "preview"}
@@ -192,8 +199,10 @@ def relabel(
     )
 
 
-def label_rows(rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: EngineConfig) -> Resolved:
-    """Give every row the player its segment turned out to be, tags included, and sort the rows.
+def label_rows(
+    rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: EngineConfig, fixes: list[Fix] | None = None
+) -> Resolved:
+    """Give every row the player its segment turned out to be, tags included, then ``fixes``, and sort the rows.
 
     Rows of people the tags say are not players get ``NOT_A_PLAYER`` and no
     team; ``players_only`` leaves them out.
@@ -210,6 +219,9 @@ def label_rows(rows: list[dict], segments: list[Segment], tags: list[Tag], cfg: 
             found.unmatched = sorted(found.unmatched + missed)
     for row in rows:
         row["player"] = labels[row["segment"]]
+    if fixes:
+        apply_fixes(rows, fixes)
+    for row in rows:
         row["team"] = TEAM_OF.get(row["player"], "")
     rows.sort(key=lambda r: (r["frame"], r["player"]))
     return found
@@ -414,6 +426,7 @@ def run_match(
     on_progress: ProgressFn | None = None,
     tracker: PersonTracker | None = None,
     tags: list[Tag] | None = None,
+    fixes: list[Fix] | None = None,
 ) -> dict[str, object]:
     """Everything the engine can do for one match, into one run folder.
 
@@ -422,7 +435,8 @@ def run_match(
     points the clips step found, and shots, point endings and the match
     report (with each player's highlights) are built from all of it.
     Without a calibration only clips and highlights are produced. ``tags``
-    name players and settle who is who (see ``tags.py``).
+    name players and settle who is who, and ``fixes`` override it where
+    they say (see ``tags.py``).
     """
     from .ball import run_ball
     from .clips import run_clips
@@ -432,7 +446,7 @@ def run_match(
     cfg = config or EngineConfig()
     report = on_progress or (lambda p: None)
     if calibration is not None and cfg.live.enabled:
-        return _run_live(video_path, Path(out_dir), calibration, cfg, report, tracker, tags)
+        return _run_live(video_path, Path(out_dir), calibration, cfg, report, tracker, tags, fixes)
     result: dict[str, object] = {}
     tracks = None
     # Share of the progress bar: tracking, clips, the ball, then shots and the report.
@@ -440,7 +454,7 @@ def run_match(
     if calibration is not None:
         result["tracking"] = run_tracking(
             video_path, calibration, out_dir, cfg, tracker=tracker, on_progress=lambda p: report(stages[0] * p),
-            tags=tags,
+            tags=tags, fixes=fixes,
         )
         tracks = Path(out_dir) / "tracks.csv"
     clips = run_clips(
@@ -471,6 +485,7 @@ def _run_live(
     report: ProgressFn,
     tracker: PersonTracker | None,
     tags: list[Tag] | None,
+    fixes: list[Fix] | None = None,
 ) -> dict[str, object]:
     """``run_match`` publishing results as it goes (see ``live.py``); the final outputs are the same."""
     from .clips import listen, run_clips
@@ -484,7 +499,7 @@ def _run_live(
     with LiveRun(video_path, out, calibration, cfg, heard) as live:
         result["tracking"] = run_tracking(
             video_path, calibration, out, cfg, tracker=tracker, on_progress=lambda p: report(0.03 + 0.77 * p),
-            tags=tags, on_chunk=live.chunk, smooth_cache=live.cache,
+            tags=tags, on_chunk=live.chunk, smooth_cache=live.cache, fixes=fixes,
         )
         tracks = out / "tracks.csv"
         ball = live.finish_ball(tracks, on_progress=lambda p: report(0.8 + 0.06 * p))
@@ -512,8 +527,9 @@ def apply_tags(
     tags: list[Tag],
     config: EngineConfig | None = None,
     on_progress: ProgressFn | None = None,
+    fixes: list[Fix] | None = None,
 ) -> dict[str, object]:
-    """Bring a finished run up to date with ``tags``: who is who, then shots and the report.
+    """Bring a finished run up to date with ``tags`` and ``fixes``: who is who, then shots and the report.
 
     Nothing is detected or tracked again, so this takes a fraction of an
     analysis; most of it is cutting each player's reels and shorts afresh,
@@ -528,7 +544,7 @@ def apply_tags(
     report = on_progress or (lambda p: None)
     who = lambda: {(r["frame"], r["segment"], r["player"]) for r in read_tracks(out / "tracks.csv")}  # noqa: E731
     before = who()
-    result: dict[str, object] = {"tracking": relabel(out, calibration, tags, cfg)}
+    result: dict[str, object] = {"tracking": relabel(out, calibration, tags, cfg, fixes)}
     report(0.1)
     if who() == before:  # nobody changed number
         report(1.0)

@@ -63,6 +63,13 @@ seconds, shots and report included. Tags are listed under the viewer;
 clicking one plays that moment, × takes it back, and a tag that couldn't be
 applied is marked so you can tag that player at another moment.
 
+If the names still sit on the wrong players from some point on, **Fix names
+from here** is the fallback: pause where it goes wrong, pick the player shown
+there and who it really is, and the two swap from that moment to the end of
+the match (or to an end time you give). It overrides the tracking and the
+tags, leaves names, tags and the calibration alone, and is listed under the
+viewer with its own × to take it back.
+
   The **match report** below the viewer has the team and player tables,
   tips and, if a Claude key is set on the server, a coach's summary; it
   downloads as Markdown. **Name the players** there once per match. **Player

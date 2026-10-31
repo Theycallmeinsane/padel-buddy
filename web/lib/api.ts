@@ -26,6 +26,7 @@ export type Match = {
   error: string | null;
   player_names?: Record<string, string>; // P1..P4 -> name
   tags?: Tag[];
+  fixes?: Fix[];
   job: Job | null;
   live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
 };
@@ -45,6 +46,13 @@ export type Tag = {
   not_player?: boolean; // someone the tracking took for a player, e.g. a ball fetcher; no name
 };
 export type TagIn = Omit<Tag, "id" | "applied">;
+
+/**
+ * Who is who put right by hand: from `start_s` to `end_s` (null: the end of the
+ * match) the player shown as `player` is really `becomes`, so the two swap there.
+ */
+export type Fix = { id: string; start_s: number; end_s: number | null; player: string; becomes: string };
+export type FixIn = Omit<Fix, "id">;
 
 export type UploadStatus = { received: number; total: number | null; complete: boolean };
 export type Keypoint = { name: string; x_m: number; y_m: number };
@@ -392,6 +400,9 @@ export class Api {
   addTag = (id: string, tag: TagIn) =>
     this.request<Match>(`/matches/${id}/tags`, { method: "POST", body: JSON.stringify(tag) });
   deleteTag = (id: string, tagId: string) => this.request<Match>(`/matches/${id}/tags/${tagId}`, { method: "DELETE" });
+  addFix = (id: string, fix: FixIn) =>
+    this.request<Match>(`/matches/${id}/fixes`, { method: "POST", body: JSON.stringify(fix) });
+  deleteFix = (id: string, fixId: string) => this.request<Match>(`/matches/${id}/fixes/${fixId}`, { method: "DELETE" });
   player = (id: string, pid: string) => this.request<PlayerInMatch>(`/matches/${id}/players/${pid}`);
   reportUrl = (id: string) => this.media(`/matches/${id}/report.md`);
   people = () => this.request<Person[]>("/people");

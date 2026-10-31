@@ -9,7 +9,7 @@ from padel_engine import analytics, court
 from padel_engine.calibration import Calibration
 from padel_engine.config import AnalyticsConfig, EngineConfig
 from padel_engine.pipeline import read_tracks, relabel, run_tracking
-from padel_engine.tags import Tag
+from padel_engine.tags import Fix, Tag
 from synthetic import H, W, Camera, ScriptedTracker, paths, person_bbox, render_frame
 
 SRC_FPS = 25.0
@@ -218,3 +218,43 @@ def test_tags_name_players_and_fix_who_is_who_without_tracking_again(tmp_path):
     again = read_tracks(run / "tracks.csv")
     assert [(r["frame"], r["player"]) for r in again] == [(r["frame"], r["player"]) for r in rows]
     assert read_tracks(run / "not_players.csv") == []
+
+
+def test_a_fix_renames_a_player_from_a_moment_on_and_taking_it_back_undoes_it(tmp_path):
+    cam = Camera()
+    gt = paths(12.0, SRC_FPS)
+    video = tmp_path / "match.mp4"
+    make_video(video, cam, gt)
+    calib = Calibration.from_points(
+        {n: tuple(cam.ground([court.KEYPOINTS[n]])[0]) for n in
+         ["far_left_corner", "far_right_corner", "far_service_center", "near_service_left", "near_service_right"]},
+        (W, H),
+    )
+    cfg = EngineConfig()
+    stride = round(SRC_FPS / cfg.tracking.process_fps)
+    run = tmp_path / "run"
+    run_tracking(video, calib, run, cfg, tracker=ScriptedTracker(cam, gt, stride, SRC_FPS))
+    plain = read_tracks(run / "tracks.csv")
+    summary = json.loads((run / "summary.json").read_text())
+
+    # "From 6 s on, the one shown as P1 is really P3."
+    relabel(run, calib, [], cfg, [Fix(6.0, None, "P1", "P3")])
+    fixed = read_tracks(run / "tracks.csv")
+    assert len(fixed) == len(plain)
+    swap = {"P1": "P3", "P3": "P1"}
+    by_key = {(r["frame"], r["segment"]): r["player"] for r in fixed}
+    for r in plain:
+        want = swap.get(r["player"], r["player"]) if r["time_s"] >= 6.0 else r["player"]
+        assert by_key[(r["frame"], r["segment"])] == want
+    assert all(r["team"] == {"P1": "A", "P2": "A", "P3": "B", "P4": "B"}[r["player"]] for r in fixed)
+    assert len({(r["frame"], r["player"]) for r in fixed}) == len(fixed)
+    overlay = json.loads((run / "overlay.json").read_text())
+    for pid, p in overlay["players"].items():
+        assert len(p["t"]) == sum(r["player"] == pid for r in fixed)
+    assert json.loads((run / "summary.json").read_text())["players"] != summary["players"]
+
+    # Taking the fix back gives the tracking's own answer again.
+    relabel(run, calib, [], cfg, [])
+    assert [(r["frame"], r["player"]) for r in read_tracks(run / "tracks.csv")] == [
+        (r["frame"], r["player"]) for r in plain
+    ]
