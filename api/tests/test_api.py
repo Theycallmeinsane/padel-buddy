@@ -673,6 +673,19 @@ def test_full_match_plays_a_browser_copy_of_a_video_browsers_cannot_show(client,
     assert served != original and served == storage.web_video_path(m["id"]).read_bytes()
 
 
+def test_no_browser_copy_when_the_disk_is_nearly_full(client, settings, tmp_path, monkeypatch, caplog):
+    import collections
+
+    m = client.post("/matches", json={"title": "x"}).json()
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4").read_bytes())
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(worker.shutil, "disk_usage", lambda _: usage(10**12, 10**12, 10**9))
+
+    storage = LocalStorage(settings.data_dir)
+    assert worker.make_web_copy(Database(settings.db_url), storage, set()) is False
+    assert not storage.web_video_path(m["id"]).exists() and "1.0 GB is free" in caplog.text
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 def test_downloads_are_cut_from_the_original_without_re_encoding(client, settings, tmp_path):
     import subprocess
@@ -743,3 +756,39 @@ def test_someone_can_be_tagged_as_not_a_player(client, settings, tmp_path):
     body = {"time_s": 60, "x": 900, "y": 500, "player": "P2", "not_player": True}
     m = client.post(f"/matches/{mid}/tags", json=body)
     assert m.json()["job"]["kind"] == "relabel" and m.json()["player_names"] == {}
+
+
+def test_times_are_sent_with_their_zone(client):
+    """Stored in UTC; sent without a zone, browsers would show them hours off."""
+    from datetime import datetime
+
+    m = client.post("/matches", json={"title": "Zone"}).json()
+    created = datetime.fromisoformat(client.get(f"/matches/{m['id']}").json()["created_at"])
+    assert created.utcoffset() is not None and created.utcoffset().total_seconds() == 0
+
+
+def test_a_name_whose_tags_all_failed_comes_off_the_player(client, settings, tmp_path):
+    """Named "Tester", then tagged as not a player: the report must not keep showing "Tester (P1)"."""
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=make_video(tmp_path / "v.mp4").read_bytes())
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+    client.put(f"/matches/{mid}/players", json={"names": {"P2": "Ali"}})  # given without a tag: stays
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "segments.json").write_text("{}")
+        # The "Tester" tag (the first) no longer fits once that person is not a player.
+        unmatched = [k for k, t in enumerate(tags) if t["name"] == "Tester"]
+        (run_dir / "summary.json").write_text(json.dumps({"names": {}, "unmatched_tags": unmatched}))
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    client.post(f"/matches/{mid}/analyze")
+    assert worker.run_once(db, storage, "test", engine)
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 5, "x": 100, "y": 500, "name": "Tester", "player": "P1"})
+    assert r.json()["player_names"] == {"P1": "Tester", "P2": "Ali"}
+    body = {"time_s": 9, "x": 100, "y": 500, "player": "P1", "not_player": True}
+    assert client.post(f"/matches/{mid}/tags", json=body).json()["job"]["kind"] == "relabel"
+    assert worker.run_once(db, storage, "test", engine, engine)
+
+    m = client.get(f"/matches/{mid}").json()
+    assert m["player_names"] == {"P2": "Ali"}
+    assert [t["applied"] for t in m["tags"]] == [False, True]
