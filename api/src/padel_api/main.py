@@ -362,17 +362,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mixed people up, and who is who is decided again in the background,
         from the last time that player passed close to someone. A tag on a
         frame rather than a box is placed the same way, in the background.
+
+        A tag saying the person is not a player (a ball fetcher the tracking
+        took for one) has no name; the tracking drops them, in the background.
         """
         if body.player is not None and body.player not in PLAYER_IDS:
             raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}")
         name = _clean_name(body.name)
-        if not name:
+        if not name and not body.not_player:
             raise HTTPException(422, "Give the player a name")
         match = session.merge(match)
         tags = list(match.tags or [])
+        if body.not_player:
+            match.tags = [*tags, _new_tag(body, "", applied=None, not_player=True)]
+            session.commit()
+            queue_relabel(session, match)
+            return match_out(match)
+        named = [t for t in tags if not t.get("not_player")]
         names = dict(match.player_names or {})
-        name = next((n for n in [*names.values(), *(t["name"] for t in tags)] if _same_name(n, name)), name)
-        tagged = {t["name"].casefold() for t in tags}
+        name = next((n for n in [*names.values(), *(t["name"] for t in named)] if _same_name(n, name)), name)
+        tagged = {t["name"].casefold() for t in named}
         holder = next((pid for pid, n in names.items() if _same_name(n, name)), None)
         current = names.get(body.player) if body.player else None
         shown = body.player is not None and match.status == "done"
@@ -389,12 +398,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 409, "This match already has four names. Tag one of them, or rename a player in the report first."
             )
-        tag = {
-            "id": new_id()[:12], "time_s": round(body.time_s, 3), "x": round(body.x, 1), "y": round(body.y, 1),
-            "name": name, "player": body.player, "applied": True if shown and not mixed_up else None,
-            "created_at": now().isoformat(),
-        }
-        match.tags = [*tags, tag]
+        match.tags = [*tags, _new_tag(body, name, applied=True if shown and not mixed_up else None)]
         match.player_names = names or None
         session.commit()
         if mixed_up or not shown or jobs.active_job(session, match.id) is not None:
@@ -582,6 +586,14 @@ def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, fl
 
 def _file_title(title: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "", title).strip() or "match"
+
+
+def _new_tag(body: TagIn, name: str, applied: bool | None, not_player: bool = False) -> dict:
+    tag = {
+        "id": new_id()[:12], "time_s": round(body.time_s, 3), "x": round(body.x, 1), "y": round(body.y, 1),
+        "name": name, "player": body.player, "applied": applied, "created_at": now().isoformat(),
+    }
+    return {**tag, "not_player": True} if not_player else tag
 
 
 def _clean_name(name: str) -> str:

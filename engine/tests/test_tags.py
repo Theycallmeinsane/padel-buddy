@@ -1,3 +1,4 @@
+from padel_engine.players import NOT_A_PLAYER
 from padel_engine.tags import Tag, find_segment, resolve
 
 
@@ -40,3 +41,21 @@ def test_names_keep_the_numbers_their_tags_show():
     tags = [at(0, "A"), at(1, "B"), at(2, "C"), at(3, "D"), at(4, "E"), Tag(0.0, 5000, 5000, "F")]
     found = resolve(tags, rows, labels)
     assert len(found.names) == 4 and 5 in found.unmatched and len(found.unmatched) == 2
+
+
+def test_a_tag_can_say_someone_is_not_a_player():
+    boxes = {seg: (100 * seg, 0, 100 * seg + 50, 100) for seg in range(3)}
+    rows = [row(float(seg), boxes[seg], seg) for seg in range(3)]
+    labels = ["P1", "P2", "P2"]
+    at = lambda seg, name="", not_player=False: Tag(float(seg), boxes[seg][0] + 25, 50, name, not_player)  # noqa: E731
+
+    found = resolve([at(0, "Maya"), at(2, not_player=True)], rows, labels)
+    assert found.names == {"P1": "Maya"} and found.pins == {0: "P1", 2: NOT_A_PLAYER} and found.unmatched == []
+
+    # Named after all: the later tag replaces it, and the other way round.
+    found = resolve([at(2, not_player=True), at(2, "Ali")], rows, labels)
+    assert found.pins == {2: "P2"} and found.unmatched == [0]
+    found = resolve([at(2, "Ali"), at(2, not_player=True)], rows, labels)
+    assert found.pins == {2: NOT_A_PLAYER} and found.names == {} and found.unmatched == [0]
+    assert Tag.from_dict({"time_s": 1, "x": 2, "y": 3, "name": "", "not_player": True}).not_player
+    assert not Tag.from_dict({"time_s": 1, "x": 2, "y": 3, "name": "Maya"}).not_player

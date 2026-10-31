@@ -204,3 +204,17 @@ def test_tags_name_players_and_fix_who_is_who_without_tracking_again(tmp_path):
     overlay = json.loads((tmp_path / "run" / "overlay.json").read_text())
     for pid, p in overlay["players"].items():
         assert len(p["t"]) == sum(r["player"] == pid for r in rows)
+
+    # Then the person at 8 s is tagged as not a player: their piece leaves the outputs, but is kept aside ...
+    run = tmp_path / "run"
+    relabel(run, calib, [*tags[:2], Tag(8.0, tags[2].x, tags[2].y, "", not_player=True)], cfg)
+    kept, others = read_tracks(run / "tracks.csv"), read_tracks(run / "not_players.csv")
+    assert others and {r["player"] for r in others} == {"-"} and len(kept) + len(others) == len(rows)
+    assert a1["segment"] in {r["segment"] for r in others} and a1["segment"] not in {r["segment"] for r in kept}
+    overlay = json.loads((run / "overlay.json").read_text())
+    assert sum(len(p["t"]) for p in overlay["players"].values()) == len(kept)
+    # ... so taking the tag back brings them back.
+    relabel(run, calib, tags, cfg)
+    again = read_tracks(run / "tracks.csv")
+    assert [(r["frame"], r["player"]) for r in again] == [(r["frame"], r["player"]) for r in rows]
+    assert read_tracks(run / "not_players.csv") == []

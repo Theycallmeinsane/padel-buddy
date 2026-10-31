@@ -144,6 +144,12 @@ from the camera, `y` 0–20 m from the near back wall to the far one, net at
    seconds. A tag that can't hold (nobody tracked under it, a fifth name,
    or it contradicts another tag on the same stretch) is listed in
    `summary.json` as not applied.
+   **Not a player.** When a player is lost for a while, their number can
+   pick up a ball fetcher who steps inside the lines. A tag can say the
+   person there is not a player. Their piece of track is dropped, and so is
+   every piece whose colours match theirs better than any player's, so one
+   or two such tags clear a fetcher from the whole match. The dropped rows
+   go to `not_players.csv`, so taking the tag back restores them.
 4. **Analytics** smooths positions with a Kalman smoother that knows a
    pixel of jitter is a few centimetres near the camera but tens of
    centimetres at the far wall, then computes distance, speed, depth zones
