@@ -10,7 +10,7 @@ import Results from "@/components/Results";
 import { PlayerTagger } from "@/components/Tags";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
 import { Api, ApiError, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
-import { liveNames, suggestions } from "@/lib/tags";
+import { LABEL_GOAL, labelCounts, labelGap, labelsToDo, liveNames, suggestions } from "@/lib/tags";
 
 // Static export can't pre-render one page per match, so the id is a query
 // parameter: /match/?id=...
@@ -45,6 +45,7 @@ function MatchView() {
     [live, tagged, match?.player_names],
   );
   const tags = useMemo(() => match?.tags ?? [], [match?.tags]);
+  const todo = labelsToDo(labelCounts(tags, labelGap(match?.duration_s ?? null)));
   const known = useMemo(() => suggestions(names, people), [names, people]);
   const seek = useCallback((t: number) => setSeekTo((prev) => ({ t, n: (prev?.n ?? 0) + 1 })), []);
 
@@ -83,6 +84,18 @@ function MatchView() {
   }, [match, refresh]);
 
   async function analyze() {
+    // Tracking keeps the players apart best once each is named at moments across the match.
+    if (
+      match?.calibrated &&
+      todo.length &&
+      !confirm(
+        `Each player should be named on ${LABEL_GOAL} frames spread across the match, so the tracking keeps them ` +
+          `apart. Still to do: ${todo.join(", ")}.\n\nAnalyse anyway? Cancel to name them first.`,
+      )
+    ) {
+      setNaming(true);
+      return;
+    }
     setError(null);
     try {
       await api.analyze(id);
@@ -223,7 +236,7 @@ function MatchView() {
                 </button>
                 {match.calibrated && (
                   <button onClick={() => setNaming(true)}>
-                    {tags.length ? `Named players (${new Set(tags.map((t) => t.name.toLowerCase())).size})` : "Name players"}
+                    {todo.length ? "Name players" : "Players named ✓"}
                   </button>
                 )}
                 <button className="primary" onClick={analyze} disabled={busy}>

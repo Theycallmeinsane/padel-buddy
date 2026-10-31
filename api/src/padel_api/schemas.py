@@ -25,13 +25,14 @@ class JobOut(BaseModel):
 
 
 class TagIn(BaseModel):
-    """Someone pointing at a person in the video and naming them."""
+    """Someone pointing at a person in the video and naming them, or saying they are not a player."""
 
     time_s: float = Field(..., ge=0, description="Match time of the moment, in seconds")
     x: float = Field(..., description="A point on the person, in source video pixels")
     y: float
-    name: str = Field(..., min_length=1, max_length=60)
+    name: str = Field("", max_length=60)
     player: str | None = Field(None, description="The box clicked (P1-P4), when the match is already analysed")
+    not_player: bool = Field(False, description="The person there is not a player, e.g. a ball fetcher")
 
 
 class TagOut(BaseModel):
@@ -42,6 +43,7 @@ class TagOut(BaseModel):
     name: str
     player: str | None
     applied: bool | None  # None until the next analysis; False when no tracked player was there
+    not_player: bool = False
 
 
 class LiveOut(BaseModel):

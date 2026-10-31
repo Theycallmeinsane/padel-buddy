@@ -657,3 +657,37 @@ def test_stopping_who_is_who_keeps_the_finished_results(client, settings, tmp_pa
     m = client.get(f"/matches/{mid}").json()
     assert m["status"] == "done" and m["job"]["status"] == "stopped"
     assert client.get(f"/matches/{mid}/results").json()["tracking"]["names"] == {"P1": "Maya"}
+
+
+def test_someone_can_be_tagged_as_not_a_player(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+    for k, name in enumerate(("Maya", "Ali", "Sam", "Noor")):
+        client.post(f"/matches/{mid}/tags", json={"time_s": 5, "x": 100 * k, "y": 500, "name": name})
+    assert client.post(f"/matches/{mid}/tags", json={"time_s": 5, "x": 900, "y": 500}).status_code == 422
+
+    # The ball fetcher needs no name, and is not a fifth one.
+    r = client.post(f"/matches/{mid}/tags", json={"time_s": 9, "x": 900, "y": 500, "not_player": True})
+    assert r.status_code == 201, r.text
+    tag = r.json()["tags"][-1]
+    assert tag["not_player"] is True and tag["name"] == "" and tag["applied"] is None
+
+    given = []
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        given.append(tags)
+        (run_dir / "segments.json").write_text("{}")
+        (run_dir / "summary.json").write_text(json.dumps({"names": {}, "unmatched_tags": []}))
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    client.post(f"/matches/{mid}/analyze")
+    assert worker.run_once(db, storage, "test", engine)
+    assert [t.get("not_player", False) for t in given[0]] == [False] * 4 + [True]
+    assert client.get(f"/matches/{mid}").json()["tags"][-1]["applied"] is True
+
+    # On a finished match it is applied in the background, without analysing again.
+    body = {"time_s": 60, "x": 900, "y": 500, "player": "P2", "not_player": True}
+    m = client.post(f"/matches/{mid}/tags", json=body)
+    assert m.json()["job"]["kind"] == "relabel" and m.json()["player_names"] == {}

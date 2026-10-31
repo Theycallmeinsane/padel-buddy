@@ -242,8 +242,10 @@ export default function MatchViewer({
               left={draft.left}
               top={draft.top}
               suggestions={suggestions}
-              onSave={async (name) => {
-                const error = await onTag({ time_s: draft.t, x: draft.x, y: draft.y, name, player: draft.player });
+              onSave={async (name, notPlayer) => {
+                const error = await onTag({
+                  time_s: draft.t, x: draft.x, y: draft.y, name, player: draft.player, not_player: notPlayer,
+                });
                 if (!error) setDraft(null);
                 return error;
               }}
