@@ -247,3 +247,9 @@ h3 { font-size: 1rem; margin: 18px 0 8px; }
 }
 .fix-panel { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
 .fix-panel input[type="text"] { width: auto; }
+
+/* -10 s / +10 s under every video */
+.skip { display: flex; gap: 6px; margin: 6px 0; }
+.skip button { padding: 4px 10px; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.clip .skip { margin: 6px 10px 0; }
+.row .skip { display: inline-flex; margin: 0; }

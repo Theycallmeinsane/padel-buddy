@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { playerLabel, type Api, type Clip, type Results as ResultsData } from "@/lib/api";
 import { formatTime } from "./common";
+import { Video } from "./Video";
 import Points from "./Points";
 
 export default function Results({
@@ -34,7 +35,7 @@ export default function Results({
           </p>
           {clips.highlights ? (
             <>
-              <video
+              <Video
                 className="reel"
                 controls
                 controlsList="nodownload"
@@ -56,7 +57,7 @@ export default function Results({
                 Condensed match: every point back to back
                 {clips.condensed_s ? ` (${formatTime(clips.condensed_s)})` : ""}
               </summary>
-              <video
+              <Video
                 className="reel"
                 controls
                 controlsList="nodownload"
@@ -138,7 +139,7 @@ export default function Results({
           {tracking.outputs.preview && (
             <details style={{ marginTop: 12 }}>
               <summary>Tracking preview video</summary>
-              <video className="reel" controls preload="none" src={api.fileUrl(matchId, tracking.outputs.preview)} />
+              <Video className="reel" controls preload="none" src={api.fileUrl(matchId, tracking.outputs.preview)} />
             </details>
           )}
         </section>
@@ -152,7 +153,7 @@ function ClipCard({ api, matchId, clip }: { api: Api; matchId: string; clip: Cli
   return (
     <div className="clip">
       {playing || !clip.thumbnail ? (
-        <video
+        <Video
           controls
           controlsList="nodownload"
           autoPlay={playing}

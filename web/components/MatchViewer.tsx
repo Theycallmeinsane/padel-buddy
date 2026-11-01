@@ -6,6 +6,7 @@ import { KIND_LABELS } from "@/lib/shots";
 import { playerAt, toSource } from "@/lib/tags";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
+import { SkipButtons } from "./Video";
 import { FixList, FixPanel, type SaveFix } from "./NameFixes";
 import { NameBox, TagList, type SaveTag } from "./Tags";
 
@@ -303,6 +304,7 @@ export default function MatchViewer({
       </div>
 
       <div className="row small" style={{ marginTop: 8 }}>
+        <SkipButtons videoRef={videoRef} />
         <span className="grow muted">
           {formatTime(matchTime)}
           {point

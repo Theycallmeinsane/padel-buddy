@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { focusLine, keptInPlay, kindLabel, statsFromKinds } from "@/lib/shots";
 import { formatTime } from "./common";
+import { Video } from "./Video";
 import { PLAYER_COLORS } from "./MatchViewer";
 
 const PLAYERS = ["P1", "P2", "P3", "P4"];
@@ -344,7 +345,7 @@ export function PlayerCard({
       )}
       {reelFile ? (
         <>
-          <video
+          <Video
             key={reelFile}
             className="reel"
             controls
@@ -439,7 +440,7 @@ export function ShortVideo({ api, matchId, short, title }: { api: Api; matchId: 
   const url = api.fileUrl(matchId, short.file);
   return (
     <figure className="short">
-      <video controls playsInline preload="metadata" src={url} aria-label={title} />
+      <Video controls playsInline preload="metadata" src={url} aria-label={title} />
       <figcaption className="small">
         <span>{title}</span>
         <a href={url} download={short.file.split("/").pop()}>
