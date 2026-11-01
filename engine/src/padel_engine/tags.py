@@ -11,6 +11,16 @@ the earlier tag, which is then reported as not applied.
 A tag can instead say the person there is not a player, such as a ball
 fetcher the tracking took for one: their piece is pinned to
 ``NOT_A_PLAYER``, and it needs no name.
+
+A fix is the fallback for when tags can't settle it: "from this moment, the
+player shown as P2 is really P3". It overrides whatever the tracking and the
+tags decided, row by row, by swapping the two numbers in that stretch. Names
+stay with their numbers, so the name follows the person again.
+
+The stretch ends where the tracking itself switches either of the two again
+(their track pieces end, usually when players pass close), since from there
+the tracking may well be right once more. A fix can instead run to a given
+time, or to the end of the match.
 """
 
 from __future__ import annotations
@@ -40,6 +50,71 @@ class Tag:
         return cls(
             float(d["time_s"]), float(d["x"]), float(d["y"]), str(d["name"]), bool(d.get("not_player", False))
         )
+
+
+@dataclass(frozen=True)
+class Fix:
+    """From ``start_s`` the player shown as ``player`` is ``becomes``.
+
+    Until ``end_s`` when given; otherwise to the end of the match with
+    ``to_end``, or else until the tracking switches either of them again.
+    """
+
+    start_s: float
+    end_s: float | None
+    player: str
+    becomes: str
+    to_end: bool = False
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Fix:
+        end = d.get("end_s")
+        return cls(
+            float(d["start_s"]), None if end is None else float(end), str(d["player"]), str(d["becomes"]),
+            bool(d.get("to_end", False)),
+        )
+
+
+def _piece_end(rows: list[dict], player: str, start_s: float) -> float | None:
+    """When the track piece showing ``player`` at ``start_s`` (or first after it) ends; None if they never show."""
+    shown = [r for r in rows if r["player"] == player and r["time_s"] >= start_s]
+    if not shown:
+        return None
+    first = min(shown, key=lambda r: r["time_s"])
+    return max(r["time_s"] for r in rows if r["segment"] == first["segment"])
+
+
+def fix_end(rows: list[dict], fix: Fix) -> float | None:
+    """Where ``fix`` stops: its given end (not covered), the last row of a piece (covered), or None for never."""
+    if fix.end_s is not None:
+        return fix.end_s
+    if fix.to_end:
+        return None
+    ends = [_piece_end(rows, pid, fix.start_s) for pid in (fix.player, fix.becomes)]
+    ends = [e for e in ends if e is not None]
+    return min(ends) if ends else fix.start_s
+
+
+def apply_fixes(rows: list[dict], fixes: list[Fix]) -> int:
+    """Swap the two players of each fix in its stretch, in order, so a later fix builds on an earlier one.
+
+    Rows of people who are not players are left alone. Returns how many rows changed.
+    """
+    changed = 0
+    for fix in fixes:
+        if fix.player == fix.becomes:
+            continue
+        end = fix_end(rows, fix)
+        # A given end is where the mix-up stops; a piece's end is its last row, which is still mixed up.
+        last_too = fix.end_s is None
+        swap = {fix.player: fix.becomes, fix.becomes: fix.player}
+        for row in rows:
+            t = row["time_s"]
+            inside = t >= fix.start_s and (end is None or t < end or (last_too and t == end))
+            if row["player"] in swap and inside:
+                row["player"] = swap[row["player"]]
+                changed += 1
+    return changed
 
 
 @dataclass

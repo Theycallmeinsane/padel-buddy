@@ -793,3 +793,81 @@ def test_a_name_whose_tags_all_failed_comes_off_the_player(client, settings, tmp
     m = client.get(f"/matches/{mid}").json()
     assert m["player_names"] == {"P2": "Ali"}
     assert [t["applied"] for t in m["tags"]] == [False, True]
+
+
+def test_a_player_can_be_put_right_by_hand_from_a_moment_on(client, settings, tmp_path):
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    mid = client.post("/matches", json={"title": "Sunday"}).json()["id"]
+    client.put(f"/matches/{mid}/video", content=data)
+    fix = {"start_s": 120, "player": "P1", "becomes": "P3"}
+    assert client.post(f"/matches/{mid}/fixes", json=fix).status_code == 409  # nothing tracked yet
+    client.put(f"/matches/{mid}/calibration", json={"image_size": [1280, 720], "points": COURT})
+    client.post(f"/matches/{mid}/tags", json={"time_s": 5, "x": 300, "y": 500, "name": "Maya"})
+    client.put(f"/matches/{mid}/players", json={"names": {"P3": "Ali"}})
+
+    given = []
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=(), **kw):
+        given.append(("analyze", kw.get("fixes")))
+        (run_dir / "segments.json").write_text("{}")
+        (run_dir / "summary.json").write_text(json.dumps({"names": {"P1": "Maya"}, "unmatched_tags": []}))
+
+    def relabeler(video, run_dir, calibration, config, on_progress, tags=(), **kw):
+        fixes = kw.get("fixes", [])
+        given.append(("relabel", [(f["start_s"], f["end_s"], f["player"], f["becomes"], f["to_end"]) for f in fixes]))
+        (run_dir / "summary.json").write_text(json.dumps({"names": {"P1": "Maya"}, "unmatched_tags": []}))
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    client.post(f"/matches/{mid}/analyze")
+    assert worker.run_once(db, storage, "test", engine)
+    before = client.get(f"/matches/{mid}").json()
+
+    # Nonsense is refused.
+    for bad in (
+        {**fix, "becomes": "P1"}, {**fix, "player": "P9"}, {**fix, "end_s": 100}, {**fix, "start_s": -1},
+    ):
+        assert client.post(f"/matches/{mid}/fixes", json=bad).status_code == 422, bad
+
+    # From 2:00, the one shown as Maya (P1) is Ali (P3): who is who is decided again in the background.
+    r = client.post(f"/matches/{mid}/fixes", json=fix)
+    assert r.status_code == 201, r.text
+    m = r.json()
+    (saved,) = m["fixes"]
+    assert (saved["start_s"], saved["end_s"], saved["player"], saved["becomes"]) == (120, None, "P1", "P3")
+    assert saved["to_end"] is False  # until the tracking switches them again
+    assert m["job"]["kind"] == "relabel" and m["job"]["status"] == "queued"
+    # Names, tags and the calibration stay as they were.
+    assert m["player_names"] == before["player_names"] == {"P1": "Maya", "P3": "Ali"}
+    assert m["tags"] == before["tags"] and m["calibrated"]
+
+    # One for a stretch only, and one to the end of the match.
+    m = client.post(f"/matches/{mid}/fixes", json={"start_s": 300, "end_s": 330, "player": "P2", "becomes": "P4"}).json()
+    assert len(m["fixes"]) == 2 and m["fixes"][1]["end_s"] == 330
+    m = client.post(f"/matches/{mid}/fixes", json={**fix, "start_s": 400, "to_end": True}).json()
+    assert m["fixes"][2]["to_end"] is True
+
+    assert worker.run_once(db, storage, "test", engine, relabeler)
+    assert given[-1] == (
+        "relabel", [(120, None, "P1", "P3", False), (300, 330, "P2", "P4", False), (400, None, "P1", "P3", True)]
+    )
+    m = client.get(f"/matches/{mid}").json()
+    assert m["status"] == "done" and m["player_names"] == {"P1": "Maya", "P3": "Ali"}
+
+    # Taking them back decides again without them.
+    assert client.delete(f"/matches/{mid}/fixes/nope").status_code == 404
+    m = client.delete(f"/matches/{mid}/fixes/{m['fixes'][0]['id']}").json()
+    assert [f["player"] for f in m["fixes"]] == ["P2", "P1"] and m["job"]["kind"] == "relabel"
+    assert worker.run_once(db, storage, "test", engine, relabeler)
+    for f in m["fixes"]:
+        m = client.delete(f"/matches/{mid}/fixes/{f['id']}").json()
+    assert m["fixes"] == []
+    assert worker.run_once(db, storage, "test", engine, relabeler)
+    assert given[-1] == ("relabel", [])
+    assert given[-2] == ("relabel", [(300, 330, "P2", "P4", False), (400, None, "P1", "P3", True)])
+
+    # Analysing again keeps a fix and hands it to the engine.
+    client.post(f"/matches/{mid}/fixes", json=fix)
+    worker.run_once(db, storage, "test", engine, relabeler)
+    client.post(f"/matches/{mid}/analyze")
+    assert worker.run_once(db, storage, "test", engine, relabeler)
+    assert given[-1][0] == "analyze" and [f["becomes"] for f in given[-1][1]] == ["P3"]

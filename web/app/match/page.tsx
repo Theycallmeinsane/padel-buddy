@@ -9,7 +9,7 @@ import Report from "@/components/Report";
 import Results from "@/components/Results";
 import { PlayerTagger } from "@/components/Tags";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
-import { Api, ApiError, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
+import { Api, ApiError, type FixIn, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
 import { LABEL_GOAL, labelCounts, labelGap, labelsToDo, liveNames, suggestions } from "@/lib/tags";
 
 // Static export can't pre-render one page per match, so the id is a query
@@ -127,6 +127,23 @@ function MatchView() {
   async function deleteTag(tagId: string) {
     try {
       setMatch(await api.deleteTag(id, tagId));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function addFix(fix: FixIn): Promise<string | null> {
+    try {
+      setMatch(await api.addFix(id, fix));
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
+  async function deleteFix(fixId: string) {
+    try {
+      setMatch(await api.deleteFix(id, fixId));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -285,6 +302,9 @@ function MatchView() {
           suggestions={known}
           onTag={addTag}
           onDeleteTag={deleteTag}
+          fixes={match.fixes ?? []}
+          onFix={match.calibrated && !live ? addFix : undefined}
+          onDeleteFix={deleteFix}
           updating={relabelling}
           live={!!live}
           version={version}

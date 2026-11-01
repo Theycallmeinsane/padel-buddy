@@ -30,24 +30,29 @@ log = logging.getLogger("padel.worker")
 
 COPY_SPARE_BYTES = 2_000_000_000  # left free beside a browser copy, for uploads and analysis
 
-# (video, run_dir, calibration | None, engine config, on_progress, tags=[...]) -> anything
+# (video, run_dir, calibration | None, engine config, on_progress, tags=[...], fixes=[...]) -> anything;
+# ``fixes`` is only passed when the match has some.
 Runner = Callable[..., object]
 
 
-def engine_runner(video: Path, run_dir: Path, calibration, config, on_progress, tags=()) -> object:
+def engine_runner(video: Path, run_dir: Path, calibration, config, on_progress, tags=(), fixes=()) -> object:
     from padel_engine.pipeline import run_match
-    from padel_engine.tags import Tag
+    from padel_engine.tags import Fix, Tag
 
     return run_match(
-        video, run_dir, calibration, config, on_progress=on_progress, tags=[Tag.from_dict(t) for t in tags]
+        video, run_dir, calibration, config, on_progress=on_progress, tags=[Tag.from_dict(t) for t in tags],
+        fixes=[Fix.from_dict(f) for f in fixes],
     )
 
 
-def engine_relabeler(video: Path, run_dir: Path, calibration, config, on_progress, tags=()) -> object:
+def engine_relabeler(video: Path, run_dir: Path, calibration, config, on_progress, tags=(), fixes=()) -> object:
     from padel_engine.pipeline import apply_tags
-    from padel_engine.tags import Tag
+    from padel_engine.tags import Fix, Tag
 
-    return apply_tags(video, run_dir, calibration, [Tag.from_dict(t) for t in tags], config, on_progress)
+    return apply_tags(
+        video, run_dir, calibration, [Tag.from_dict(t) for t in tags], config, on_progress,
+        fixes=[Fix.from_dict(f) for f in fixes],
+    )
 
 
 def process(
@@ -65,6 +70,7 @@ def process(
     match.status = "processing"
     session.commit()
     tags = list(match.tags or [])
+    extra = {"fixes": list(match.fixes)} if match.fixes else {}
     try:
         config = EngineConfig.model_validate(job.config or {})
         calib = None
@@ -77,10 +83,13 @@ def process(
         if job.kind == "relabel":
             if calib is None:
                 raise ValueError("Tags need the court calibrated and the match analysed")
-            relabeler(video, storage.run_dir(match.id), calib, config, jobs.ProgressReporter(session, job), tags=tags)
+            relabeler(
+                video, storage.run_dir(match.id), calib, config, jobs.ProgressReporter(session, job), tags=tags,
+                **extra,
+            )
         else:
             run_dir = storage.reset_run(match.id)
-            runner(video, run_dir, calib, config, jobs.ProgressReporter(session, job), tags=tags)
+            runner(video, run_dir, calib, config, jobs.ProgressReporter(session, job), tags=tags, **extra)
         _take_names(session, match, tags, storage.run_dir(match.id) / "summary.json")
     except jobs.Stopped:
         session.rollback()

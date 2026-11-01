@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Api, BallTrack, Bounce, Overlay, PointEnding, Rally, Results, Shot, Tag } from "@/lib/api";
+import type { Api, BallTrack, Bounce, Fix, Overlay, PointEnding, Rally, Results, Shot, Tag } from "@/lib/api";
 import { KIND_LABELS } from "@/lib/shots";
 import { playerAt, toSource } from "@/lib/tags";
 import { lowerBound, nearest, toMatchTime, toVideoTime, type Segment } from "@/lib/timeline";
 import { formatTime } from "./common";
+import { FixList, FixPanel, type SaveFix } from "./NameFixes";
 import { NameBox, TagList, type SaveTag } from "./Tags";
 
 // Same colours as the engine's preview video: team A in blues, team B warm.
@@ -43,6 +44,9 @@ export default function MatchViewer({
   suggestions = [],
   onTag,
   onDeleteTag,
+  fixes = [],
+  onFix,
+  onDeleteFix,
   updating = false,
   live = false,
   version = "",
@@ -58,6 +62,9 @@ export default function MatchViewer({
   suggestions?: string[]; // names to offer when tagging
   onTag?: SaveTag;
   onDeleteTag?: (id: string) => void;
+  fixes?: Fix[]; // who is who put right by hand, from a moment on
+  onFix?: SaveFix;
+  onDeleteFix?: (id: string) => void;
   updating?: boolean; // who is who is being decided again after a tag
   live?: boolean; // the results so far, while the match is analysed
   version?: string; // changes when the outputs were rewritten in place
@@ -82,6 +89,7 @@ export default function MatchViewer({
   const [layers, setLayers] = useState<Layers>({ lines: true, players: true, ball: true, shots: true, minimap: true });
   const [matchTime, setMatchTime] = useState(0);
   const [tagging, setTagging] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const narrow = useMediaQuery("(max-width: 720px)");
@@ -214,6 +222,18 @@ export default function MatchViewer({
             {tagging ? "Done naming" : "Name or fix a player"}
           </button>
         )}
+        {overlay && onFix && (
+          <button
+            className={fixing ? "primary" : ""}
+            onClick={() => {
+              if (!fixing) videoRef.current?.pause();
+              setFixing(!fixing);
+            }}
+            title="When the names go onto the wrong players partway through"
+          >
+            Fix names from here
+          </button>
+        )}
         {condensed && (
           <div className="segmented" role="group" aria-label="What to play">
             <button className={source === "points" ? "on" : ""} onClick={() => switchTo("points")}>
@@ -320,8 +340,10 @@ export default function MatchViewer({
         </a>
       </p>
       {tagging && hint && <p className="small muted">{hint}</p>}
-      {updating && <p className="small muted">Updating who is who from your tags. The names here change when it&apos;s done.</p>}
+      {fixing && onFix && <FixPanel names={names} now={matchTime} onSave={onFix} onClose={() => setFixing(false)} />}
+      {updating && <p className="small muted">Updating who is who from your tags and fixes. The names here change when it&apos;s done.</p>}
       {onDeleteTag && <TagList tags={tags} onSeek={seek} onDelete={onDeleteTag} />}
+      {onDeleteFix && <FixList fixes={fixes} names={names} onSeek={seek} onDelete={onDeleteFix} />}
 
       {fullFailed && (
         <p className="muted small">

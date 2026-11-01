@@ -13,6 +13,8 @@ Flow for one match:
     PUT  /matches/{id}/players            name the players: {"names": {"P1": "Maya"}}
     POST /matches/{id}/tags               name the person at a spot at a moment (fixes mix-ups too)
     DELETE /matches/{id}/tags/{tag}       take a tag back
+    POST /matches/{id}/fixes              fallback: from a moment, the player shown as P1 is really P3
+    DELETE /matches/{id}/fixes/{fix}      take a fix back
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
     GET  /people                          everyone named in any match
@@ -43,7 +45,7 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, JobOut, Keypoint, LiveOut, MatchCreate, MatchOut, PersonOut,
+    AnalyzeIn, CalibrationIn, CalibrationOut, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate, MatchOut, PersonOut,
     PlayerNamesIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
@@ -420,6 +422,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             queue_relabel(session, match)
         return match_out(match)
 
+    @app.post("/matches/{match_id}/fixes", status_code=201, dependencies=auth)
+    def add_fix(body: FixIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        """Put who is who right by hand, from a moment, when tags can't.
+
+        The player shown as ``player`` there is really ``becomes``: the two
+        numbers swap, so each name follows its person again, until the
+        tracking next switches either of them (it may be right again from
+        there), or until ``end_s``, or with ``to_end`` to the end of the
+        match. It overrides the tracking and the tags, and is applied in the
+        background like a tag; taking it back undoes it.
+        """
+        if body.player not in PLAYER_IDS or body.becomes not in PLAYER_IDS:
+            raise HTTPException(422, f"Players are {', '.join(PLAYER_IDS)}")
+        if body.player == body.becomes:
+            raise HTTPException(422, "Choose someone else: that is who is shown there already")
+        if body.end_s is not None and body.end_s <= body.start_s:
+            raise HTTPException(422, "The end must come after the start")
+        match = session.merge(match)
+        if match.calibration is None or not (storage.run_dir(match.id) / "segments.json").exists():
+            raise HTTPException(409, "Players can be put right once the match is analysed with the court calibrated")
+        fix = {
+            "id": new_id()[:12], "start_s": round(body.start_s, 3),
+            "end_s": None if body.end_s is None else round(body.end_s, 3),
+            "player": body.player, "becomes": body.becomes, "to_end": body.to_end and body.end_s is None,
+            "created_at": now().isoformat(),
+        }
+        match.fixes = [*(match.fixes or []), fix]
+        session.commit()
+        queue_relabel(session, match)
+        return match_out(match)
+
+    @app.delete("/matches/{match_id}/fixes/{fix_id}", dependencies=auth)
+    def delete_fix(fix_id: str, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        match = session.merge(match)
+        fixes = list(match.fixes or [])
+        if not any(f["id"] == fix_id for f in fixes):
+            raise HTTPException(404, "No such fix")
+        match.fixes = [f for f in fixes if f["id"] != fix_id] or None
+        session.commit()
+        queue_relabel(session, match)
+        return match_out(match)
+
     def queue_relabel(session: Session, match: Match) -> None:
         """Decide who is who again from the tags, after whatever is already queued or running.
 
@@ -619,6 +663,7 @@ def _match_out(match: Match, run: Path | None = None) -> MatchOut:
         video_size=match.video_size, video_received=match.video_received, duration_s=match.duration_s,
         calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
         tags=[TagOut.model_validate(t) for t in match.tags or []],
+        fixes=[FixOut.model_validate(f) for f in match.fixes or []],
         job=_job_out(latest) if latest else None,
         live=_live(run) if run is not None and match.status != "done" else None,
     )

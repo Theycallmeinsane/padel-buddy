@@ -245,3 +245,5 @@ h3 { font-size: 1rem; margin: 18px 0 8px; }
   .points .info .ending { flex-basis: 100%; }
   .points .info .ending:empty { display: none; }
 }
+.fix-panel { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+.fix-panel input[type="text"] { width: auto; }

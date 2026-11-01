@@ -44,6 +44,8 @@ class Match(Base):
     player_names: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"P1": "Maya", ...}
     # People named in the video: [{"id", "time_s", "x", "y", "name", "player", "applied"}, ...]
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Who is who put right by hand: [{"id", "start_s", "end_s", "player", "becomes"}, ...] (see engine tags.Fix)
+    fixes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(
