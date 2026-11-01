@@ -219,3 +219,23 @@ def probe_duration(path) -> float:
         capture_output=True, text=True, check=True,
     )
     return float(out.stdout.strip())
+
+
+@needs_ffmpeg
+def test_nvenc_failure_falls_back_to_x264(tmp_path):
+    """NVENC refuses pictures this small (and machines without a GPU); the copy is still made, with x264."""
+    from padel_engine.clips import browser_copy
+
+    tiny = tmp_path / "tiny.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=10:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(tiny)],
+        check=True,
+    )
+    out = browser_copy(tiny, tmp_path / "tiny.web.mp4", encoder="h264_nvenc")
+    codec = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width",
+         "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert codec == "h264,64"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import threading
@@ -26,6 +27,8 @@ from .settings import Settings, get_settings
 from .storage import LocalStorage
 
 log = logging.getLogger("padel.worker")
+
+COPY_SPARE_BYTES = 2_000_000_000  # left free beside a browser copy, for uploads and analysis
 
 # (video, run_dir, calibration | None, engine config, on_progress, tags=[...]) -> anything
 Runner = Callable[..., object]
@@ -111,9 +114,15 @@ def _take_names(session: Session, match: Match, tags: list[dict], summary_path: 
     missed = set(summary.get("unmatched_tags", []))
     held = {t["id"]: k not in missed for k, t in enumerate(tags)}
     match.tags = [{**t, "applied": held.get(t["id"], t.get("applied"))} for t in match.tags or []]
+    # A name only tags gave, none of which held any more (say the person was then
+    # tagged as not a player), comes off the player it was shown on straight away.
+    by_tags = {t["name"].casefold() for t in match.tags if t.get("name") and not t.get("not_player")}
+    holding = {t["name"].casefold() for t in match.tags if t.get("name") and t.get("applied") is not False}
+    dropped = by_tags - holding
+    taken = {v.casefold() for v in named.values()}
     names = {
         pid: n for pid, n in (match.player_names or {}).items()
-        if n.casefold() not in {v.casefold() for v in named.values()}
+        if n.casefold() not in taken and n.casefold() not in dropped
     }
     names.update(named)
     match.player_names = names or None
@@ -154,6 +163,15 @@ def make_web_copy(db: Database, storage: LocalStorage, checked: set[str]) -> boo
         checked.add(match_id)
         video, web = storage.video_path(match_id, ext), storage.web_video_path(match_id)
         if web.exists() or not video.exists() or plays_in_browsers(video):
+            continue
+        # The copy is about as big as the original; filling the disk would stop uploads and analysis.
+        need, free = video.stat().st_size + COPY_SPARE_BYTES, shutil.disk_usage(web.parent).free
+        if free < need:
+            log.warning(
+                "not making a browser copy of match %s's video: it needs about %.1f GB and %.1f GB is free. "
+                "Free some space and restart Padel Buddy to make it.",
+                match_id, need / 1e9, free / 1e9,
+            )
             continue
         log.info("making a browser copy of match %s's video", match_id)
         try:

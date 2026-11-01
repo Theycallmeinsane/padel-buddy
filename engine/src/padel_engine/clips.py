@@ -15,6 +15,7 @@ Writes into the run folder (the same one tracking uses, if it ran first):
 from __future__ import annotations
 
 import csv
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,8 @@ from . import __version__, audio, events, files
 from .config import EngineConfig
 from .schemas import ClipInfo, ClipsSummary, MomentInfo, RallyInfo, VideoMeta
 from .video import VideoInfo, h264_args, probe
+
+log = logging.getLogger(__name__)
 
 ProgressFn = Callable[[float], None]
 
@@ -352,6 +355,26 @@ def _encode_args(crf: int, height: int | None = None, encoder: str = "auto") -> 
 
 
 def _ffmpeg(*args: str) -> None:
+    """Run FFmpeg. An NVENC encode that fails is done again with x264.
+
+    NVENC refuses some jobs that x264 takes, such as pictures smaller than
+    its minimum size, and a GPU can be busy or gone since it was checked.
+    """
+    try:
+        _run_ffmpeg(args)
+    except audio.AudioError:
+        if "h264_nvenc" not in args:
+            raise
+        at = args.index("h264_nvenc") - 1  # h264_args starts with "-c:v"
+        crf = int(args[args.index("-cq") + 1])
+        nvenc = h264_args(crf, "h264_nvenc")
+        if list(args[at : at + len(nvenc)]) != nvenc:
+            raise
+        log.warning("NVENC failed; encoding with x264 instead", exc_info=True)
+        _run_ffmpeg((*args[:at], *h264_args(crf, "libx264"), *args[at + len(nvenc) :]))
+
+
+def _run_ffmpeg(args: tuple[str, ...]) -> None:
     proc = subprocess.run(["ffmpeg", "-y", "-v", "error", *args], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise audio.AudioError(f"ffmpeg failed: {proc.stderr.strip()}")
