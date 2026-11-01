@@ -216,7 +216,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if download:
             return FileResponse(path, filename=f"{_file_title(match.title)}{match.video_ext}")
         web = storage.web_video_path(match.id)
-        return FileResponse(web if web.exists() else path)
+        # The browser copy can appear behind this address later: browsers must check, not reuse.
+        return FileResponse(web if web.exists() else path, headers={"Cache-Control": "no-cache"})
 
     @app.get("/matches/{match_id}/original/{rel:path}", dependencies=auth)
     def original_output(rel: str, match: Match = Depends(load_match)) -> FileResponse:

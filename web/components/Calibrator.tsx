@@ -12,6 +12,8 @@ const LINES: [number, number, number, number][] = [
   [5, 2.85, 5, 17.15],
 ];
 
+const MAX_ERROR_M = 0.5; // average disagreement of the points beyond which tracking goes wrong
+
 type Props = {
   api: Api;
   matchId: string;
@@ -29,6 +31,8 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
   const [step, setStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Saved, but the points disagree: stay open so they can be fixed, or kept on purpose.
+  const [warning, setWarning] = useState<string | null>(null);
   const img = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -62,13 +66,16 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
     if (!size) return;
     setSaving(true);
     setError(null);
+    setWarning(null);
     try {
       const res = await api.saveCalibration(matchId, size, points);
-      if (res.reprojection_error_m > 0.5) {
-        setError(
-          `Saved, but the points disagree by ${(res.reprojection_error_m * 100).toFixed(0)} cm on average. ` +
-            "Check each point is on the right line.",
+      if (res.reprojection_error_m > MAX_ERROR_M) {
+        setWarning(
+          `Saved, but the points disagree by ${(res.reprojection_error_m * 100).toFixed(0)} cm on average, ` +
+            "so players will be tracked in the wrong places. Check each point is on the right line, " +
+            "then save again.",
         );
+        return;
       }
       onSaved();
     } catch (e) {
@@ -159,10 +166,17 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
             <button className="primary" onClick={save} disabled={count < 4 || saving || !size}>
               {saving ? "Saving…" : "Save"}
             </button>
-            <button onClick={onCancel}>Cancel</button>
+            {/* After a save with a warning the points are kept, so closing must show them. */}
+            <button onClick={warning ? onSaved : onCancel}>Cancel</button>
           </div>
         </div>
       </div>
+      {warning && (
+        <div className="row small" role="alert">
+          <p className="error grow" style={{ margin: 0 }}>{warning}</p>
+          <button onClick={onSaved}>Keep these points</button>
+        </div>
+      )}
       {error && <p className="error small">{error}</p>}
     </div>
   );

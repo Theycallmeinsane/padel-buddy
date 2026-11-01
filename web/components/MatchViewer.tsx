@@ -82,6 +82,7 @@ export default function MatchViewer({
 
   const [source, setSource] = useState<Source>(condensed ? "points" : "full");
   const [fullFailed, setFullFailed] = useState(false);
+  const [fullTries, setFullTries] = useState(0); // goes up each time Full match is tried again after failing
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [overlayError, setOverlayError] = useState<string | null>(null);
   const [ball, setBall] = useState<BallTrack | null>(null);
@@ -166,7 +167,11 @@ export default function MatchViewer({
   function startTagging(on: boolean) {
     setTagging(on);
     setDraft(null);
-    setHint(on ? "Pause where you can see the player, then click their box." : null);
+    setHint(
+      on
+        ? "Pause where you can see the player, then click their box and give their name. If a box has the wrong name, give the right one: who is who is worked out again from there."
+        : null,
+    );
     if (on) videoRef.current?.pause();
   }
 
@@ -193,13 +198,18 @@ export default function MatchViewer({
   }
 
   function switchTo(next: Source) {
+    if (next === "full" && fullFailed) {
+      // The browser copy may be ready now: try again.
+      setFullFailed(false);
+      setFullTries(fullTries + 1);
+    }
     resumeAt.current = matchTime;
     setSource(next);
   }
 
   const point = rallies.find((r) => r.start_s - 2 <= matchTime && matchTime <= r.end_s + 2);
   const ending = point ? endings.get(point.index) : undefined;
-  const src = source === "points" && condensed ? api.fileUrl(matchId, condensed) : api.videoUrl(matchId);
+  const src = source === "points" && condensed ? api.fileUrl(matchId, condensed) : api.videoUrl(matchId, fullTries);
 
   return (
     <section className="card">
@@ -209,7 +219,7 @@ export default function MatchViewer({
         </h2>
         {overlay && onTag && (
           <button className={tagging ? "primary" : ""} onClick={() => startTagging(!tagging)}>
-            {tagging ? "Done naming" : "Name a player"}
+            {tagging ? "Done naming" : "Name or fix a player"}
           </button>
         )}
         {overlay && onFix && (
@@ -229,7 +239,7 @@ export default function MatchViewer({
             <button className={source === "points" ? "on" : ""} onClick={() => switchTo("points")}>
               Points only{clips?.condensed_s ? ` · ${formatTime(clips.condensed_s)}` : ""}
             </button>
-            <button className={source === "full" ? "on" : ""} onClick={() => switchTo("full")} disabled={fullFailed}>
+            <button className={source === "full" ? "on" : ""} onClick={() => switchTo("full")}>
               Full match
             </button>
           </div>
@@ -296,7 +306,7 @@ export default function MatchViewer({
         <span className="grow muted">
           {formatTime(matchTime)}
           {point
-            ? ` · point ${point.index + 1} of ${rallies.length} · ${point.hits} shots${best.has(point.index) ? " · one of the best" : ""}${ending ? endingText(ending, names) : ""}`
+            ? ` · point ${point.index + 1} of ${rallies.length} · ${ending?.shots ?? point.hits} shots${best.has(point.index) ? " · one of the best" : ""}${ending ? endingText(ending, names) : ""}`
             : ""}
         </span>
         {overlay &&
@@ -611,7 +621,7 @@ function Timeline({
             opacity: 0.35 + 0.65 * r.score,
             borderBottom: endings.get(r.index)?.won_by ? `3px solid ${TEAM_COLORS[endings.get(r.index)!.won_by!]}` : undefined,
           }}
-          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
+          title={`Point ${r.index + 1} at ${formatTime(r.start_s)}: ${endings.get(r.index)?.shots ?? r.hits} shots, ${Math.round(r.end_s - r.start_s)} s${
             endings.get(r.index)?.won_by ? `, won by team ${endings.get(r.index)!.won_by}` : ""
           }`}
           aria-label={`Play point ${r.index + 1} at ${formatTime(r.start_s)}`}

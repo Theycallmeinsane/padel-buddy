@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Api, Clip, Results as ResultsData } from "@/lib/api";
+import { playerLabel, type Api, type Clip, type Results as ResultsData } from "@/lib/api";
 import { formatTime } from "./common";
 import Points from "./Points";
 
@@ -106,7 +106,7 @@ export default function Results({
                 {tracking.players.map((p) => (
                   <tr key={p.player}>
                     <td className={p.team === "A" ? "team-a" : "team-b"}>
-                      {p.player} <span className="muted small">team {p.team}</span>
+                      {playerLabel(p.player, names)} <span className="muted small">team {p.team}</span>
                     </td>
                     <td>{pct(p.seen_fraction)}</td>
                     <td>{p.distance_m.toFixed(0)} m</td>
@@ -130,8 +130,8 @@ export default function Results({
               .map((p) => (
                 <figure key={p.player}>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={api.fileUrl(matchId, p.heatmap!, version)} alt={`${p.player} heatmap`} />
-                  <figcaption className="small">{p.player}</figcaption>
+                  <img src={api.fileUrl(matchId, p.heatmap!, version)} alt={`${playerLabel(p.player, names)} heatmap`} />
+                  <figcaption className="small">{playerLabel(p.player, names)}</figcaption>
                 </figure>
               ))}
           </div>
