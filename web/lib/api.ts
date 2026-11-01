@@ -27,6 +27,7 @@ export type Match = {
   player_names?: Record<string, string>; // P1..P4 -> name
   tags?: Tag[];
   fixes?: Fix[];
+  cuts?: Cut[]; // clips cut from typed times
   job: Job | null;
   live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
 };
@@ -61,6 +62,17 @@ export type Fix = {
   to_end?: boolean;
 };
 export type FixIn = Omit<Fix, "id">;
+
+/** A clip cut from the full match at times typed in; the worker cuts it, then it plays and downloads. */
+export type Cut = {
+  id: string;
+  start_s: number;
+  end_s: number;
+  name: string;
+  status: "waiting" | "done" | "failed";
+  error?: string | null;
+};
+export type CutIn = Pick<Cut, "start_s" | "end_s" | "name">;
 
 export type UploadStatus = { received: number; total: number | null; complete: boolean };
 export type Keypoint = { name: string; x_m: number; y_m: number };
@@ -414,6 +426,11 @@ export class Api {
   addFix = (id: string, fix: FixIn) =>
     this.request<Match>(`/matches/${id}/fixes`, { method: "POST", body: JSON.stringify(fix) });
   deleteFix = (id: string, fixId: string) => this.request<Match>(`/matches/${id}/fixes/${fixId}`, { method: "DELETE" });
+  addCuts = (id: string, ranges: CutIn[]) =>
+    this.request<Match>(`/matches/${id}/cuts`, { method: "POST", body: JSON.stringify({ ranges }) });
+  deleteCut = (id: string, cutId: string) => this.request<Match>(`/matches/${id}/cuts/${cutId}`, { method: "DELETE" });
+  cutVideoUrl = (id: string, cutId: string) => this.media(`/matches/${id}/cuts/${cutId}/video`);
+  cutOriginalUrl = (id: string, cutId: string) => this.media(`/matches/${id}/cuts/${cutId}/original`);
   player = (id: string, pid: string) => this.request<PlayerInMatch>(`/matches/${id}/players/${pid}`);
   reportUrl = (id: string) => this.media(`/matches/${id}/report.md`);
   people = () => this.request<Person[]>("/people");

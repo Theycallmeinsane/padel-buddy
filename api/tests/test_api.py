@@ -871,3 +871,90 @@ def test_a_player_can_be_put_right_by_hand_from_a_moment_on(client, settings, tm
     client.post(f"/matches/{mid}/analyze")
     assert worker.run_once(db, storage, "test", engine, relabeler)
     assert given[-1][0] == "analyze" and [f["becomes"] for f in given[-1][1]] == ["P3"]
+
+
+def test_typed_times_are_checked_against_the_match():
+    from padel_api.main import _cut_spans, _cut_title
+
+    assert _cut_spans([(5, 12.34567), (0, 3)], 60.0) == [(5, 12.346), (0, 3)]
+    assert _cut_spans([(50, 60.6)], 60.0) == [(50, 60.0)]  # a rounded-up end is the video's end
+    assert _cut_spans([(100, 200)], None) == [(100, 200)]  # length unknown: taken as typed
+    for spans, message in (
+        ([(0, 5), (10, 10.2)], "Clip 2 must end"),
+        ([(8, 3)], "Clip 1 must end"),
+        ([(61, 70)], "Clip 1 starts after the video ends"),
+        ([(50, 75)], "Clip 1 ends after the video ends"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            _cut_spans(spans, 60.0)
+
+    assert _cut_title("Sunday: final", {"name": "Great lob", "start_s": 0, "end_s": 1}) == "Sunday final - Great lob"
+    assert _cut_title("x", {"name": "", "start_s": 750, "end_s": 3725}) == "x - 12-30 to 1-02-05"
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="needs ffmpeg")
+def test_clips_are_cut_from_typed_times(client, settings, tmp_path):
+    import subprocess
+
+    def probe(data: bytes) -> tuple[str, float]:
+        f = tmp_path / "got.mp4"
+        f.write_bytes(data)
+        codec, duration = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name:format=duration",
+             "-of", "csv=p=0", str(f)], capture_output=True, text=True, check=True,
+        ).stdout.split()
+        return codec, float(duration)
+
+    m = client.post("/matches", json={"title": "Sunday"}).json()
+    ranges = {"ranges": [{"start_s": 1, "end_s": 3, "name": "  Great   lob "}, {"start_s": 4, "end_s": 5.5}]}
+    assert client.post(f"/matches/{m['id']}/cuts", json=ranges).status_code == 409  # no video yet
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4", seconds=6).read_bytes())
+
+    bad = client.post(f"/matches/{m['id']}/cuts", json={"ranges": [{"start_s": 1, "end_s": 30}]})
+    assert bad.status_code == 422 and "ends after the video ends" in bad.json()["detail"]
+    assert client.post(f"/matches/{m['id']}/cuts", json={"ranges": []}).status_code == 422
+    cuts = client.post(f"/matches/{m['id']}/cuts", json=ranges).json()["cuts"]
+    assert [(c["start_s"], c["end_s"], c["name"], c["status"]) for c in cuts] == [
+        (1, 3, "Great lob", "waiting"), (4, 5.5, "", "waiting"),
+    ]
+    first, second = (c["id"] for c in cuts)
+    assert client.get(f"/matches/{m['id']}/cuts/{first}/video").status_code == 404  # still waiting
+
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    assert worker.make_cuts(db, storage) and worker.make_cuts(db, storage)
+    assert worker.make_cuts(db, storage) is False  # nothing left to cut
+    assert [c["status"] for c in client.get(f"/matches/{m['id']}").json()["cuts"]] == ["done", "done"]
+
+    # Played as H.264, downloaded in the upload's own codec, each as long as asked.
+    for cut_id, seconds in ((first, 2.0), (second, 1.5)):
+        codec, duration = probe(client.get(f"/matches/{m['id']}/cuts/{cut_id}/video").content)
+        assert codec == "h264" and duration == pytest.approx(seconds, abs=0.15)
+        r = client.get(f"/matches/{m['id']}/cuts/{cut_id}/original")
+        codec, duration = probe(r.content)
+        assert codec == "mpeg4" and abs(duration - seconds) < 1.1 and "attachment" in r.headers["content-disposition"]
+    assert r.headers["content-disposition"].endswith("Sunday%20-%200-04%20to%200-05.mp4")
+
+    # Analysing again leaves them; deleting one takes its files too.
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "clips.json").write_text("{}")
+
+    client.post(f"/matches/{m['id']}/analyze")
+    assert worker.run_once(db, storage, "test", engine)
+    assert client.get(f"/matches/{m['id']}/cuts/{first}/video").status_code == 200
+    left = client.delete(f"/matches/{m['id']}/cuts/{first}").json()["cuts"]
+    assert [c["id"] for c in left] == [second] and not list(storage.cuts_dir(m["id"]).glob(f"{first}*"))
+    assert client.get(f"/matches/{m['id']}/cuts/{first}/video").status_code == 404
+    assert client.delete(f"/matches/{m['id']}/cuts/{first}").status_code == 404
+
+
+def test_a_clip_that_cannot_be_cut_says_why_and_the_worker_goes_on(client, settings, tmp_path):
+    m = client.post("/matches", json={"title": "x"}).json()
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4").read_bytes())
+    client.post(f"/matches/{m['id']}/cuts", json={"ranges": [{"start_s": 0, "end_s": 2}]})
+    storage = LocalStorage(settings.data_dir)
+    storage.video_path(m["id"], ".mp4").unlink()  # the video went missing
+
+    assert worker.make_cuts(Database(settings.db_url), storage) is True
+    (c,) = client.get(f"/matches/{m['id']}").json()["cuts"]
+    assert c["status"] == "failed" and c["error"]
+    assert worker.make_cuts(Database(settings.db_url), storage) is False  # not tried again and again

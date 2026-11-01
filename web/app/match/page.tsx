@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Calibrator from "@/components/Calibrator";
+import Cuts from "@/components/Cuts";
 import MatchViewer from "@/components/MatchViewer";
 import Report from "@/components/Report";
 import Results from "@/components/Results";
@@ -76,12 +77,13 @@ function MatchView() {
     api.people().then((list) => setPeople(list.map((p) => p.name)), () => {});
   }, [api]);
 
-  // Follow progress while the worker is busy.
+  // Follow progress while the worker is busy, or has clips still to cut.
+  const cutting = match?.cuts?.some((c) => c.status === "waiting") ?? false;
   useEffect(() => {
-    if (!match || !ACTIVE.has(match.status)) return;
+    if (!match || (!ACTIVE.has(match.status) && !cutting)) return;
     const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
-  }, [match, refresh]);
+  }, [match, cutting, refresh]);
 
   async function analyze() {
     // Tracking keeps the players apart best once each is named at moments across the match.
@@ -288,6 +290,8 @@ function MatchView() {
           {match.status === "failed" && <p className="error small">Analysis failed: {match.error}</p>}
         </section>
       )}
+
+      {uploaded && <Cuts api={api} match={match} onMatch={setMatch} />}
 
       {results && (
         <MatchViewer

@@ -151,6 +151,54 @@ def run_once(
         return True
 
 
+def make_cuts(db: Database, storage: LocalStorage) -> bool:
+    """Cut one clip someone asked for by its times. Returns whether one was waiting.
+
+    Each is cut frame-accurately to H.264, like the analysis's clips, so
+    every browser plays it; downloads are cut from the original instead
+    (``/cuts/{id}/original``). The oldest match's clips go first.
+    """
+    from padel_engine.clips import cut
+    from padel_engine.config import EngineConfig
+
+    with db.sessions() as session:
+        todo = next((
+            (m.id, m.video_ext, c) for m in session.scalars(select(Match).order_by(Match.created_at))
+            for c in m.cuts or [] if c.get("status") == "waiting"
+        ), None)
+    if todo is None:
+        return False
+    match_id, ext, c = todo
+    dest = storage.cut_path(match_id, c["id"])
+    tmp = dest.with_name(f".{dest.name}.tmp.mp4")  # a half-made clip is never served
+    log.info("cutting %s-%s s of match %s", c["start_s"], c["end_s"], match_id)
+    error = None
+    try:
+        clips = EngineConfig().clips
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cut(storage.video_path(match_id, ext), c["start_s"], c["end_s"], tmp, clips.video_crf,
+            encoder=clips.video_encoder)
+        tmp.replace(dest)
+    except Exception as exc:  # the clip records the failure; the worker keeps going
+        log.error("cutting a clip of match %s failed:\n%s", match_id, traceback.format_exc())
+        error = f"{type(exc).__name__}: {exc}"[:500]
+    finally:
+        tmp.unlink(missing_ok=True)
+    with db.sessions() as session:
+        match = session.get(Match, match_id)  # read again: clips may have been added or deleted meanwhile
+        if match is None:
+            storage.delete(match_id)
+        elif not any(x["id"] == c["id"] for x in match.cuts or []):
+            storage.delete_cut(match_id, c["id"])
+        else:
+            match.cuts = [
+                {**x, "status": "failed" if error else "done", "error": error} if x["id"] == c["id"] else x
+                for x in match.cuts
+            ]
+            session.commit()
+    return True
+
+
 def make_web_copy(db: Database, storage: LocalStorage, checked: set[str]) -> bool:
     """Make one missing browser copy of an uploaded video. Returns whether one was made.
 
@@ -209,7 +257,8 @@ def run_forever(settings: Settings, stop: threading.Event) -> None:
         with db.sessions() as s:
             if n := jobs.requeue_stale(s, settings.stale_job_s):
                 log.warning("re-queued %d stale job(s)", n)
-        if not run_once(db, storage, name) and not make_web_copy(db, storage, checked):
+        # Clips cut by hand take seconds, so they go before an analysis that takes an hour.
+        if not make_cuts(db, storage) and not run_once(db, storage, name) and not make_web_copy(db, storage, checked):
             stop.wait(settings.worker_poll_s)
 
 

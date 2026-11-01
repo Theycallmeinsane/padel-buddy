@@ -15,6 +15,10 @@ Flow for one match:
     DELETE /matches/{id}/tags/{tag}       take a tag back
     POST /matches/{id}/fixes              fallback: from a moment, the player shown as P1 is really P3
     DELETE /matches/{id}/fixes/{fix}      take a fix back
+    POST /matches/{id}/cuts               cut clips from typed times: {"ranges": [{"start_s", "end_s", "name"}]}
+    GET  /matches/{id}/cuts/{cut}/video   one cut, to play (H.264)
+    GET  /matches/{id}/cuts/{cut}/original  one cut, to download in the camera's quality
+    DELETE /matches/{id}/cuts/{cut}       delete a cut
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
     GET  /people                          everyone named in any match
@@ -45,8 +49,8 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate, MatchOut, PersonOut,
-    PlayerNamesIn, PlayerOut, TagIn, TagOut, UploadStatus,
+    AnalyzeIn, CalibrationIn, CalibrationOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
+    MatchOut, PersonOut, PlayerNamesIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
@@ -464,6 +468,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_relabel(session, match)
         return match_out(match)
 
+    # -- clips cut from typed times -----------------------------------------
+
+    @app.post("/matches/{match_id}/cuts", status_code=201, dependencies=auth)
+    def add_cuts(body: CutsIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        """Cut each (start, end) of the full match into its own clip.
+
+        The worker cuts them in the background, before any analysis waiting
+        for it; each one's status goes from ``waiting`` to ``done``. They are
+        kept with the match, apart from the analysis, so analysing again
+        leaves them.
+        """
+        match = session.merge(match)
+        if not _uploaded(match):
+            raise HTTPException(409, "Upload the video first")
+        try:
+            spans = _cut_spans([(r.start_s, r.end_s) for r in body.ranges], match.duration_s)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        cuts = list(match.cuts or [])
+        for (start, end), r in zip(spans, body.ranges):
+            cuts.append({
+                "id": new_id()[:12], "start_s": start, "end_s": end, "name": _clean_name(r.name),
+                "status": "waiting", "error": None, "created_at": now().isoformat(),
+            })
+        match.cuts = cuts
+        session.commit()
+        return match_out(match)
+
+    def find_cut(match: Match, cut_id: str) -> dict:
+        found = next((c for c in match.cuts or [] if c["id"] == cut_id), None)
+        if found is None:
+            raise HTTPException(404, "No such clip")
+        return found
+
+    @app.get("/matches/{match_id}/cuts/{cut_id}/video", dependencies=auth)
+    def cut_video(cut_id: str, match: Match = Depends(load_match)) -> FileResponse:
+        path = storage.cut_path(match.id, find_cut(match, cut_id)["id"])
+        if not path.exists():
+            raise HTTPException(404, "This clip is still being cut")
+        return FileResponse(path)
+
+    @app.get("/matches/{match_id}/cuts/{cut_id}/original", dependencies=auth)
+    def cut_original(cut_id: str, match: Match = Depends(load_match)) -> FileResponse:
+        """The cut taken from the original video without re-encoding, at the camera's quality."""
+        from padel_engine.clips import original_cut
+
+        c = find_cut(match, cut_id)
+        video = storage.video_path(match.id, match.video_ext)
+        if not video.exists():
+            raise HTTPException(404, "Video not uploaded yet")
+        dest = storage.cuts_dir(match.id) / f"{c['id']}.original{match.video_ext}"
+        if not dest.exists():
+            original_cut(video, [(c["start_s"], c["end_s"])], dest)
+        return FileResponse(dest, filename=f"{_cut_title(match.title, c)}{match.video_ext}")
+
+    @app.delete("/matches/{match_id}/cuts/{cut_id}", dependencies=auth)
+    def delete_cut(cut_id: str, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        match = session.merge(match)
+        gone = find_cut(match, cut_id)
+        match.cuts = [c for c in match.cuts if c is not gone] or None
+        session.commit()
+        storage.delete_cut(match.id, gone["id"])
+        return match_out(match)
+
     def queue_relabel(session: Session, match: Match) -> None:
         """Decide who is who again from the tags, after whatever is already queued or running.
 
@@ -629,6 +697,36 @@ def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, fl
     return None
 
 
+def _cut_spans(spans: list[tuple[float, float]], duration_s: float | None) -> list[tuple[float, float]]:
+    """Check typed (start, end) times against the match, rounded to milliseconds.
+
+    An end a moment past the video (a rounded-up length) is taken as its end.
+    Raises ValueError saying which clip is wrong.
+    """
+    out = []
+    for i, (start, end) in enumerate(spans, start=1):
+        if duration_s is not None:
+            if start >= duration_s:
+                raise ValueError(f"Clip {i} starts after the video ends")
+            if end > duration_s + 1.0:
+                raise ValueError(f"Clip {i} ends after the video ends")
+            end = min(end, duration_s)
+        if end - start < 0.5:
+            raise ValueError(f"Clip {i} must end at least half a second after it starts")
+        out.append((round(start, 3), round(end, 3)))
+    return out
+
+
+def _cut_title(title: str, cut: dict) -> str:
+    """'Sunday doubles - Great lob' or 'Sunday doubles 12-30 to 13-10': a file name for a cut."""
+    def clock(s: float) -> str:
+        m, sec = divmod(int(s), 60)
+        return f"{m // 60}-{m % 60:02d}-{sec:02d}" if m >= 60 else f"{m}-{sec:02d}"
+
+    what = cut.get("name") or f"{clock(cut['start_s'])} to {clock(cut['end_s'])}"
+    return _file_title(f"{title} - {what}")
+
+
 def _file_title(title: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "", title).strip() or "match"
 
@@ -664,6 +762,7 @@ def _match_out(match: Match, run: Path | None = None) -> MatchOut:
         calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
         tags=[TagOut.model_validate(t) for t in match.tags or []],
         fixes=[FixOut.model_validate(f) for f in match.fixes or []],
+        cuts=[CutOut.model_validate(c) for c in match.cuts or []],
         job=_job_out(latest) if latest else None,
         live=_live(run) if run is not None and match.status != "done" else None,
     )

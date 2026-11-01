@@ -29,6 +29,18 @@ class LocalStorage:
         """An H.264 copy of the video, made when browsers cannot show the original."""
         return self.match_dir(match_id) / "video.web.mp4"
 
+    def cuts_dir(self, match_id: str) -> Path:
+        """Clips cut from typed times. Kept outside the run folder, so analysing again leaves them."""
+        return self.match_dir(match_id) / "cuts"
+
+    def cut_path(self, match_id: str, cut_id: str) -> Path:
+        """A cut's H.264 copy, which every browser plays."""
+        return self.cuts_dir(match_id) / f"{cut_id}.mp4"
+
+    def delete_cut(self, match_id: str, cut_id: str) -> None:
+        for f in self.cuts_dir(match_id).glob(f"*{cut_id}*"):
+            f.unlink(missing_ok=True)
+
     def run_dir(self, match_id: str) -> Path:
         return self.match_dir(match_id) / "run"
 

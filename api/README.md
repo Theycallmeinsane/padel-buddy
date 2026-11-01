@@ -54,6 +54,10 @@ git-ignored. Settings come from environment variables or `.env`; see
 | `DELETE` | `/matches/{id}/tags/{tag}` | Take a tag back |
 | `POST` | `/matches/{id}/fixes` | Fallback when tags can't settle a mix-up: `{"start_s", "end_s", "player", "becomes"}` swaps the two numbers from `start_s` until the tracking next switches either of them, or to `end_s`, or with `"to_end": true` to the end of the match; queues a relabel job |
 | `DELETE` | `/matches/{id}/fixes/{fix}` | Take a fix back |
+| `POST` | `/matches/{id}/cuts` | Cut clips from typed times: `{"ranges": [{"start_s", "end_s", "name"}]}`. The worker cuts each into its own clip (before any queued analysis); kept with the match, so analysing again leaves them |
+| `GET` | `/matches/{id}/cuts/{cut}/video` | One cut, H.264 to play in the browser |
+| `GET` | `/matches/{id}/cuts/{cut}/original` | One cut, from the original without re-encoding, as a download |
+| `DELETE` | `/matches/{id}/cuts/{cut}` | Delete a cut and its files |
 | `GET` | `/matches/{id}/players/{P1-P4}` | One player in one match: their numbers, success rate per kind of shot, shots, best moments, highlight reel, winners reel and shorts |
 | `GET` | `/people` | Everyone named in any match, with how many matches each |
 | `GET` | `/people/{name}` | One person across all their matches, newest first (name match ignores case) |
