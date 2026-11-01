@@ -77,6 +77,27 @@ class FixOut(BaseModel):
     to_end: bool = False
 
 
+class CutRange(BaseModel):
+    """One stretch of the full match to cut into its own clip."""
+
+    start_s: float = Field(..., ge=0, description="Match time the clip starts, in seconds")
+    end_s: float = Field(..., gt=0, description="Match time it ends, in seconds")
+    name: str = Field("", max_length=60, description="Optional, e.g. 'Great lob'")
+
+
+class CutsIn(BaseModel):
+    ranges: list[CutRange] = Field(..., min_length=1, max_length=100)
+
+
+class CutOut(BaseModel):
+    id: str
+    start_s: float
+    end_s: float
+    name: str
+    status: str  # waiting (for the worker) | done | failed
+    error: str | None = None
+
+
 class LiveOut(BaseModel):
     """Results published while the match is analysed (or before it failed) cover the video up to here."""
 
@@ -97,6 +118,7 @@ class MatchOut(BaseModel):
     player_names: dict[str, str] = {}
     tags: list[TagOut] = []
     fixes: list[FixOut] = []
+    cuts: list[CutOut] = []  # clips cut from typed times
     job: JobOut | None = None  # the latest analysis job
     live: LiveOut | None = None  # while analysing: how far the results so far reach
 

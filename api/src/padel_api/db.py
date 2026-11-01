@@ -46,6 +46,9 @@ class Match(Base):
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Who is who put right by hand: [{"id", "start_s", "end_s", "player", "becomes"}, ...] (see engine tags.Fix)
     fixes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Clips cut by hand from typed times: [{"id", "start_s", "end_s", "name", "status", "error"}, ...]
+    # status: waiting -> done | failed. The files live in the match folder's cuts/, beside the run folder.
+    cuts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(

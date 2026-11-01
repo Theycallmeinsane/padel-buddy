@@ -253,3 +253,11 @@ h3 { font-size: 1rem; margin: 18px 0 8px; }
 .skip button { padding: 4px 10px; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
 .clip .skip { margin: 6px 10px 0; }
 .row .skip { display: inline-flex; margin: 0; }
+
+/* Clips cut from typed times: phone videos are often portrait, so show them whole. */
+.cuts-input {
+  width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; resize: vertical;
+}
+.clip.cut video { object-fit: contain; }
+.cut-wait { aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; padding: 10px; text-align: center; }
