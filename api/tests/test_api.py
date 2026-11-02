@@ -876,15 +876,11 @@ def test_a_player_can_be_put_right_by_hand_from_a_moment_on(client, settings, tm
 def test_typed_times_are_checked_against_the_match():
     from padel_api.main import _cut_spans, _cut_title
 
-    # Each clip runs 5 s past the end typed, so the point isn't cut short, but not past the video.
-    assert _cut_spans([(5, 12.34567), (0, 3)], 60.0) == [(5, 17.346), (0, 8)]
-    assert _cut_spans([(40, 57)], 60.0) == [(40, 60.0)]
+    assert _cut_spans([(5, 12.34567), (0, 3)], 60.0) == [(5, 12.346), (0, 3)]
     assert _cut_spans([(50, 60.6)], 60.0) == [(50, 60.0)]  # a rounded-up end is the video's end
-    assert _cut_spans([(100, 200)], None) == [(100, 205)]  # length unknown: only padded
-    assert _cut_spans([(5, 12)], 60.0, end_pad_s=0) == [(5, 12)]
+    assert _cut_spans([(100, 200)], None) == [(100, 200)]  # length unknown: taken as typed
     for spans, message in (
-        ([(0, 5), (10, 10.2)], "Clip 2 must end"),  # too short however far it runs on
-        ([(59.8, 60.5)], "Clip 1 must end"),  # only 0.2 s of video left
+        ([(0, 5), (10, 10.2)], "Clip 2 must end"),
         ([(8, 3)], "Clip 1 must end"),
         ([(61, 70)], "Clip 1 starts after the video ends"),
         ([(50, 75)], "Clip 1 ends after the video ends"),
@@ -912,14 +908,14 @@ def test_clips_are_cut_from_typed_times(client, settings, tmp_path):
     m = client.post("/matches", json={"title": "Sunday"}).json()
     ranges = {"ranges": [{"start_s": 1, "end_s": 3, "name": "  Great   lob "}, {"start_s": 4, "end_s": 5.5}]}
     assert client.post(f"/matches/{m['id']}/cuts", json=ranges).status_code == 409  # no video yet
-    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4", seconds=12).read_bytes())
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4", seconds=6).read_bytes())
 
     bad = client.post(f"/matches/{m['id']}/cuts", json={"ranges": [{"start_s": 1, "end_s": 30}]})
     assert bad.status_code == 422 and "ends after the video ends" in bad.json()["detail"]
     assert client.post(f"/matches/{m['id']}/cuts", json={"ranges": []}).status_code == 422
     cuts = client.post(f"/matches/{m['id']}/cuts", json=ranges).json()["cuts"]
     assert [(c["start_s"], c["end_s"], c["name"], c["status"]) for c in cuts] == [
-        (1, 8, "Great lob", "waiting"), (4, 10.5, "", "waiting"),  # 5 s past the end typed
+        (1, 3, "Great lob", "waiting"), (4, 5.5, "", "waiting"),
     ]
     first, second = (c["id"] for c in cuts)
     assert client.get(f"/matches/{m['id']}/cuts/{first}/video").status_code == 404  # still waiting
@@ -929,14 +925,14 @@ def test_clips_are_cut_from_typed_times(client, settings, tmp_path):
     assert worker.make_cuts(db, storage) is False  # nothing left to cut
     assert [c["status"] for c in client.get(f"/matches/{m['id']}").json()["cuts"]] == ["done", "done"]
 
-    # Played as H.264, downloaded in the upload's own codec, each as long as asked plus 5 s.
-    for cut_id, seconds in ((first, 7.0), (second, 6.5)):
+    # Played as H.264, downloaded in the upload's own codec, each as long as asked.
+    for cut_id, seconds in ((first, 2.0), (second, 1.5)):
         codec, duration = probe(client.get(f"/matches/{m['id']}/cuts/{cut_id}/video").content)
         assert codec == "h264" and duration == pytest.approx(seconds, abs=0.15)
         r = client.get(f"/matches/{m['id']}/cuts/{cut_id}/original")
         codec, duration = probe(r.content)
         assert codec == "mpeg4" and abs(duration - seconds) < 1.1 and "attachment" in r.headers["content-disposition"]
-    assert r.headers["content-disposition"].endswith("Sunday%20-%200-04%20to%200-10.mp4")
+    assert r.headers["content-disposition"].endswith("Sunday%20-%200-04%20to%200-05.mp4")
 
     # Analysing again leaves them; deleting one takes its files too.
     def engine(video, run_dir, calibration, config, on_progress, tags=()):
