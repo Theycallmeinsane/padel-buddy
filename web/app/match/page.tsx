@@ -151,6 +151,24 @@ function MatchView() {
     }
   }
 
+  async function editPoint(index: number, start: number, end: number): Promise<string | null> {
+    try {
+      setMatch(await api.editPoint(id, index, start, end));
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
+  async function resetPoint(index: number): Promise<string | null> {
+    try {
+      setMatch(await api.resetPoint(id, index));
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
   async function stopAnalysis() {
     if (!confirm("Stop the analysis? What it has found so far stays; analyse again to do the whole match.")) return;
     setError(null);
@@ -334,6 +352,11 @@ function MatchView() {
           names={names}
           onSeek={seek}
           version={live ? version : undefined}
+          edits={match.point_edits}
+          durationS={match.duration_s}
+          // While analysing, the points can still move and be numbered afresh.
+          onEdit={match.status === "done" ? editPoint : undefined}
+          onReset={resetPoint}
         />
       )}
 

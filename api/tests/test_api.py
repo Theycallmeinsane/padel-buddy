@@ -713,7 +713,8 @@ def test_downloads_are_cut_from_the_original_without_re_encoding(client, setting
              "-of", "csv=p=0", str(f)], capture_output=True, text=True, check=True,
         ).stdout.split()
 
-    for rel, seconds in (("points/point_001.mp4", 2), ("clips/clip_001.mp4", 2), ("highlights.mp4", 2)):
+    # A point runs 5 s past its end (0.5-2.5 s becomes 0.5-6 s: the video is 6 s long).
+    for rel, seconds in (("points/point_001.mp4", 5.5), ("clips/clip_001.mp4", 2), ("highlights.mp4", 2)):
         r = client.get(f"/matches/{m['id']}/original/{rel}")
         assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
         codec, duration = probe(r.content)
@@ -958,3 +959,40 @@ def test_a_clip_that_cannot_be_cut_says_why_and_the_worker_goes_on(client, setti
     (c,) = client.get(f"/matches/{m['id']}").json()["cuts"]
     assert c["status"] == "failed" and c["error"]
     assert worker.make_cuts(Database(settings.db_url), storage) is False  # not tried again and again
+
+
+def test_point_downloads_run_on_and_can_be_moved_by_hand(client, settings, tmp_path):
+    from padel_api.main import _original_spans
+
+    clips = {
+        "rallies": [{"index": 0, "start_s": 10.0, "end_s": 20.0, "clip": "points/point_001.mp4"},
+                    {"index": 1, "start_s": 95.0, "end_s": 98.0, "clip": "points/point_002.mp4"}],
+        "condensed_segments": [[8.0, 22.0, 0.0], [93.0, 100.0, 14.0]],
+    }
+    assert _original_spans(clips, {}, "points/point_001.mp4") == [(8.0, 27.0)]
+    assert _original_spans(clips, {}, "points/point_002.mp4", duration_s=102.0) == [(93.0, 102.0)]  # not past the end
+    edits = {"0": [9.0, 31.5]}
+    assert _original_spans(clips, {}, "points/point_001.mp4", edits) == [(9.0, 31.5)]  # kept as set
+    assert _original_spans(clips, {}, "points/point_002.mp4", edits, 200.0) == [(93.0, 105.0)]
+
+    m = client.post("/matches", json={"title": "x"}).json()
+    client.put(f"/matches/{m['id']}/video", content=make_video(tmp_path / "v.mp4", seconds=30).read_bytes())
+
+    def engine(video, run_dir, calibration, config, on_progress, tags=()):
+        (run_dir / "clips.json").write_text(json.dumps(clips))
+
+    client.post(f"/matches/{m['id']}/analyze")
+    db, storage = Database(settings.db_url), LocalStorage(settings.data_dir)
+    assert worker.run_once(db, storage, "test", engine)
+
+    url = f"/matches/{m['id']}/points"
+    assert client.put(f"{url}/7", json={"start_s": 1, "end_s": 5}).status_code == 404  # no such point
+    assert client.put(f"{url}/0", json={"start_s": 9, "end_s": 9.5}).status_code == 422  # too short
+    got = client.put(f"{url}/0", json={"start_s": 9, "end_s": 40}).json()
+    assert got["point_edits"] == {"0": [9.0, 30.0]}  # not past the video's end
+    assert client.get(f"/matches/{m['id']}").json()["point_edits"] == {"0": [9.0, 30.0]}
+    assert client.delete(f"{url}/0").json()["point_edits"] == {}
+
+    client.put(f"{url}/1", json={"start_s": 2, "end_s": 6})
+    client.post(f"/matches/{m['id']}/analyze")  # a new analysis numbers the points afresh
+    assert client.get(f"/matches/{m['id']}").json()["point_edits"] == {}

@@ -13,6 +13,7 @@ export default function Results({
   names,
   onSeek,
   version,
+  ...pointProps
 }: {
   api: Api;
   matchId: string;
@@ -20,7 +21,7 @@ export default function Results({
   names?: Record<string, string>;
   onSeek?: (t: number) => void;
   version?: string; // changes when live results rewrite the heatmaps
-}) {
+} & Pick<React.ComponentProps<typeof Points>, "edits" | "durationS" | "onEdit" | "onReset">) {
   const clips = data.clips;
   const tracking = data.tracking;
   const points = clips?.clips.some((c) => c.rallies?.length) ?? false;
@@ -83,7 +84,7 @@ export default function Results({
         </section>
       )}
 
-      <Points api={api} matchId={matchId} data={data} names={names} onSeek={onSeek} />
+      <Points api={api} matchId={matchId} data={data} names={names} onSeek={onSeek} {...pointProps} />
 
       {tracking && (
         <section className="card">
