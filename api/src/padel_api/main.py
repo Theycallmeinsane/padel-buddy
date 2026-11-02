@@ -19,6 +19,8 @@ Flow for one match:
     GET  /matches/{id}/cuts/{cut}/video   one cut, to play (H.264)
     GET  /matches/{id}/cuts/{cut}/original  one cut, to download in the camera's quality
     DELETE /matches/{id}/cuts/{cut}       delete a cut
+    PUT  /matches/{id}/points/{n}         move point n's start and end by hand: {"start_s", "end_s"}
+    DELETE /matches/{id}/points/{n}       back to the split the analysis found
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
     GET  /matches/{id}/report.md          the match report, with names
     GET  /people                          everyone named in any match
@@ -50,7 +52,7 @@ from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
     AnalyzeIn, CalibrationIn, CalibrationOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
-    MatchOut, PersonOut, PlayerNamesIn, PlayerOut, TagIn, TagOut, UploadStatus,
+    MatchOut, PersonOut, PlayerNamesIn, PointEditIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
 from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
@@ -235,7 +237,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         video = storage.video_path(match.id, match.video_ext)
         found = {n: storage.run_file(match.id, f"{n}.json") for n in ("clips", "report")}
-        spans = _original_spans(*(json.loads(f.read_bytes()) if f else {} for f in found.values()), rel)
+        spans = _original_spans(
+            *(json.loads(f.read_bytes()) if f else {} for f in found.values()), rel, match.point_edits or {},
+            match.duration_s,
+        )
         if not spans or not video.exists():
             raise HTTPException(404, "No such output")
         stem = Path(rel).stem
@@ -304,6 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 EngineConfig.model_validate(config)
             except ValueError as exc:
                 raise HTTPException(422, f"Invalid engine config: {exc}") from exc
+        match.point_edits = None  # a new analysis splits the points again, and numbers them afresh
         return _job_out(jobs.enqueue(session, match, config))
 
     @app.post("/matches/{match_id}/stop", dependencies=auth)
@@ -468,11 +474,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_relabel(session, match)
         return match_out(match)
 
+    # -- points moved by hand ------------------------------------------------
+
+    def find_rally(match: Match, index: int) -> dict:
+        f = storage.run_file(match.id, "clips.json")
+        rallies = json.loads(f.read_bytes()).get("rallies", []) if f else []
+        found = next((r for r in rallies if r["index"] == index), None)
+        if found is None:
+            raise HTTPException(404, "No such point")
+        return found
+
+    @app.put("/matches/{match_id}/points/{index}", dependencies=auth)
+    def edit_point(
+        index: int, body: PointEditIn, match: Match = Depends(load_match), session: Session = session_dep
+    ) -> MatchOut:
+        """Move where a point starts and ends, when the split was off. Its download is cut there."""
+        match = session.merge(match)
+        find_rally(match, index)
+        end = body.end_s if match.duration_s is None else min(body.end_s, match.duration_s)
+        if end - body.start_s < 1.0:
+            raise HTTPException(422, "The point must end at least a second after it starts")
+        match.point_edits = {**(match.point_edits or {}), str(index): [round(body.start_s, 2), round(end, 2)]}
+        session.commit()
+        return match_out(match)
+
+    @app.delete("/matches/{match_id}/points/{index}", dependencies=auth)
+    def reset_point(index: int, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        match = session.merge(match)
+        edits = {k: v for k, v in (match.point_edits or {}).items() if k != str(index)}
+        match.point_edits = edits or None
+        session.commit()
+        return match_out(match)
+
     # -- clips cut from typed times -----------------------------------------
 
     @app.post("/matches/{match_id}/cuts", status_code=201, dependencies=auth)
     def add_cuts(body: CutsIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
-        """Cut each (start, end) of the full match into its own clip, running 5 s past the end given.
+        """Cut each (start, end) of the full match into its own clip.
 
         The worker cuts them in the background, before any analysis waiting
         for it; each one's status goes from ``waiting`` to ``done``. They are
@@ -673,8 +711,17 @@ def _upload_status(match: Match) -> UploadStatus:
     return UploadStatus(received=match.video_received, total=match.video_size, complete=_uploaded(match))
 
 
-def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, float]] | None:
-    """Where in the match an output of clips.json or report.json comes from, as (start, end) spans."""
+POINT_END_PAD_S = 5.0  # the split tends to end a point early, so a point's download runs on this much longer
+
+
+def _original_spans(
+    clips: dict, report: dict, rel: str, point_edits: dict | None = None, duration_s: float | None = None,
+) -> list[tuple[float, float]] | None:
+    """Where in the match an output of clips.json or report.json comes from, as (start, end) spans.
+
+    A point's clip runs ``POINT_END_PAD_S`` past the end found, unless its
+    start and end were set by hand (``point_edits``), which are kept as set.
+    """
     from padel_engine.report import reel_spans
     from padel_engine.schemas import PlayerMoment
 
@@ -692,22 +739,21 @@ def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, fl
             return [(c["start_s"], c["end_s"])]
     for r in clips.get("rallies", []):
         if r.get("clip") == rel:  # points close together share one clip: the segment holding the first
+            edit = (point_edits or {}).get(str(r["index"]))
+            if edit:
+                return [(float(edit[0]), float(edit[1]))]
             pad = (max(0.0, r["start_s"] - 2.0), r["end_s"] + 2.0)  # while live, before the segments are known
-            return [next(((a, b) for a, b in condensed if a <= r["start_s"] <= b), pad)]
+            a, b = next(((a, b) for a, b in condensed if a <= r["start_s"] <= b), pad)
+            b += POINT_END_PAD_S
+            return [(a, b if duration_s is None else min(b, duration_s))]
     return None
 
 
-CUT_END_PAD_S = 5.0  # typed ends tend to cut the point short, so each hand-cut clip runs on this much longer
-
-
-def _cut_spans(
-    spans: list[tuple[float, float]], duration_s: float | None, end_pad_s: float = CUT_END_PAD_S
-) -> list[tuple[float, float]]:
+def _cut_spans(spans: list[tuple[float, float]], duration_s: float | None) -> list[tuple[float, float]]:
     """Check typed (start, end) times against the match, rounded to milliseconds.
 
-    Each clip then runs ``end_pad_s`` past the typed end, to the video's end
-    at most. An end a moment past the video (a rounded-up length) is taken as
-    its end. Raises ValueError saying which clip is wrong.
+    An end a moment past the video (a rounded-up length) is taken as its end.
+    Raises ValueError saying which clip is wrong.
     """
     out = []
     for i, (start, end) in enumerate(spans, start=1):
@@ -716,10 +762,9 @@ def _cut_spans(
                 raise ValueError(f"Clip {i} starts after the video ends")
             if end > duration_s + 1.0:
                 raise ValueError(f"Clip {i} ends after the video ends")
-        last = duration_s if duration_s is not None else float("inf")
-        if min(end, last) - start < 0.5:
+            end = min(end, duration_s)
+        if end - start < 0.5:
             raise ValueError(f"Clip {i} must end at least half a second after it starts")
-        end = min(end + end_pad_s, last)
         out.append((round(start, 3), round(end, 3)))
     return out
 
@@ -770,6 +815,7 @@ def _match_out(match: Match, run: Path | None = None) -> MatchOut:
         tags=[TagOut.model_validate(t) for t in match.tags or []],
         fixes=[FixOut.model_validate(f) for f in match.fixes or []],
         cuts=[CutOut.model_validate(c) for c in match.cuts or []],
+        point_edits={k: tuple(v) for k, v in (match.point_edits or {}).items()},
         job=_job_out(latest) if latest else None,
         live=_live(run) if run is not None and match.status != "done" else None,
     )

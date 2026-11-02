@@ -49,6 +49,8 @@ class Match(Base):
     # Clips cut by hand from typed times: [{"id", "start_s", "end_s", "name", "status", "error"}, ...]
     # status: waiting -> done | failed. The files live in the match folder's cuts/, beside the run folder.
     cuts: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Points whose start and end were moved by hand: {"<rally index>": [start_s, end_s]}. Cleared by a new analysis.
+    point_edits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(

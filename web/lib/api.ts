@@ -28,6 +28,7 @@ export type Match = {
   tags?: Tag[];
   fixes?: Fix[];
   cuts?: Cut[]; // clips cut from typed times
+  point_edits?: Record<string, [number, number]>; // rally index -> start, end moved by hand
   job: Job | null;
   live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
 };
@@ -429,6 +430,9 @@ export class Api {
   addCuts = (id: string, ranges: CutIn[]) =>
     this.request<Match>(`/matches/${id}/cuts`, { method: "POST", body: JSON.stringify({ ranges }) });
   deleteCut = (id: string, cutId: string) => this.request<Match>(`/matches/${id}/cuts/${cutId}`, { method: "DELETE" });
+  editPoint = (id: string, index: number, start_s: number, end_s: number) =>
+    this.request<Match>(`/matches/${id}/points/${index}`, { method: "PUT", body: JSON.stringify({ start_s, end_s }) });
+  resetPoint = (id: string, index: number) => this.request<Match>(`/matches/${id}/points/${index}`, { method: "DELETE" });
   cutVideoUrl = (id: string, cutId: string) => this.media(`/matches/${id}/cuts/${cutId}/video`);
   cutOriginalUrl = (id: string, cutId: string) => this.media(`/matches/${id}/cuts/${cutId}/original`);
   player = (id: string, pid: string) => this.request<PlayerInMatch>(`/matches/${id}/players/${pid}`);

@@ -98,6 +98,13 @@ class CutOut(BaseModel):
     error: str | None = None
 
 
+class PointEditIn(BaseModel):
+    """Where one point really starts and ends, moved by hand when the split was off."""
+
+    start_s: float = Field(..., ge=0, description="Match time, in seconds")
+    end_s: float = Field(..., gt=0, description="Match time, in seconds")
+
+
 class LiveOut(BaseModel):
     """Results published while the match is analysed (or before it failed) cover the video up to here."""
 
@@ -119,6 +126,7 @@ class MatchOut(BaseModel):
     tags: list[TagOut] = []
     fixes: list[FixOut] = []
     cuts: list[CutOut] = []  # clips cut from typed times
+    point_edits: dict[str, tuple[float, float]] = {}  # rally index -> (start_s, end_s) set by hand
     job: JobOut | None = None  # the latest analysis job
     live: LiveOut | None = None  # while analysing: how far the results so far reach
 

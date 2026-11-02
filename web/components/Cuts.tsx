@@ -55,8 +55,7 @@ export default function Cuts({
       <h2>Cut clips from times</h2>
       <p className="muted small" style={{ marginTop: 0 }}>
         One clip per line: start - end, then a name if you like. Times are minutes:seconds (1:05) or
-        hours:minutes:seconds (1:02:03). Each clip runs 5 seconds past the end you type, so the point
-        isn't cut short.
+        hours:minutes:seconds (1:02:03).
       </p>
       <textarea
         className="cuts-input"
