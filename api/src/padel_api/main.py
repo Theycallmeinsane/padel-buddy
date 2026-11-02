@@ -472,7 +472,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/matches/{match_id}/cuts", status_code=201, dependencies=auth)
     def add_cuts(body: CutsIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
-        """Cut each (start, end) of the full match into its own clip.
+        """Cut each (start, end) of the full match into its own clip, running 5 s past the end given.
 
         The worker cuts them in the background, before any analysis waiting
         for it; each one's status goes from ``waiting`` to ``done``. They are
@@ -697,11 +697,17 @@ def _original_spans(clips: dict, report: dict, rel: str) -> list[tuple[float, fl
     return None
 
 
-def _cut_spans(spans: list[tuple[float, float]], duration_s: float | None) -> list[tuple[float, float]]:
+CUT_END_PAD_S = 5.0  # typed ends tend to cut the point short, so each hand-cut clip runs on this much longer
+
+
+def _cut_spans(
+    spans: list[tuple[float, float]], duration_s: float | None, end_pad_s: float = CUT_END_PAD_S
+) -> list[tuple[float, float]]:
     """Check typed (start, end) times against the match, rounded to milliseconds.
 
-    An end a moment past the video (a rounded-up length) is taken as its end.
-    Raises ValueError saying which clip is wrong.
+    Each clip then runs ``end_pad_s`` past the typed end, to the video's end
+    at most. An end a moment past the video (a rounded-up length) is taken as
+    its end. Raises ValueError saying which clip is wrong.
     """
     out = []
     for i, (start, end) in enumerate(spans, start=1):
@@ -710,9 +716,10 @@ def _cut_spans(spans: list[tuple[float, float]], duration_s: float | None) -> li
                 raise ValueError(f"Clip {i} starts after the video ends")
             if end > duration_s + 1.0:
                 raise ValueError(f"Clip {i} ends after the video ends")
-            end = min(end, duration_s)
-        if end - start < 0.5:
+        last = duration_s if duration_s is not None else float("inf")
+        if min(end, last) - start < 0.5:
             raise ValueError(f"Clip {i} must end at least half a second after it starts")
+        end = min(end + end_pad_s, last)
         out.append((round(start, 3), round(end, 3)))
     return out
 
