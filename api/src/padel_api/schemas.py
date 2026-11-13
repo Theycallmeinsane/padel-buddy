@@ -77,6 +77,23 @@ class FixOut(BaseModel):
     to_end: bool = False
 
 
+class CheckIn(BaseModel):
+    """A name checked by hand at one moment, to score the tracking. Unlike a tag, the tracking never sees it."""
+
+    time_s: float = Field(..., ge=0, description="Match time of the moment, in seconds")
+    x: float = Field(..., description="A point on the person, in source video pixels")
+    y: float
+    name: str = Field(..., min_length=1, max_length=60)
+
+
+class CheckOut(BaseModel):
+    id: str
+    time_s: float
+    x: float
+    y: float
+    name: str
+
+
 class CutRange(BaseModel):
     """One stretch of the full match to cut into its own clip."""
 
@@ -121,12 +138,14 @@ class MatchOut(BaseModel):
     video_received: int
     duration_s: float | None
     calibrated: bool
+    camera_height_m: float | None = None  # from the calibration: roughly how high the camera is
     error: str | None
     player_names: dict[str, str] = {}
     tags: list[TagOut] = []
     fixes: list[FixOut] = []
     cuts: list[CutOut] = []  # clips cut from typed times
     point_edits: dict[str, tuple[float, float]] = {}  # rally index -> (start_s, end_s) set by hand
+    checks: list[CheckOut] = []  # names checked by hand to score the tracking
     job: JobOut | None = None  # the latest analysis job
     live: LiveOut | None = None  # while analysing: how far the results so far reach
 
@@ -145,6 +164,7 @@ class CalibrationIn(BaseModel):
 class CalibrationOut(BaseModel):
     points_used: list[str]
     reprojection_error_m: float
+    camera_height_m: float | None = None  # roughly how high the camera is; None when the points can't tell
 
 
 class AnalyzeIn(BaseModel):

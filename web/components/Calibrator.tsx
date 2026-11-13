@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Api, ApiError, type Keypoint } from "@/lib/api";
 import { formatTime } from "./common";
+import { cameraAdvice } from "@/lib/checks";
 
 // Court lines in metres (x 0..10 left to right from the camera, y 0..20 from
 // the camera's back wall to the far one). Mirrors padel_engine/court.py.
@@ -69,12 +70,17 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
     setWarning(null);
     try {
       const res = await api.saveCalibration(matchId, size, points);
+      const low = cameraAdvice(res.camera_height_m);
       if (res.reprojection_error_m > MAX_ERROR_M) {
         setWarning(
           `Saved, but the points disagree by ${(res.reprojection_error_m * 100).toFixed(0)} cm on average, ` +
             "so players will be tracked in the wrong places. Check each point is on the right line, " +
             "then save again.",
         );
+        return;
+      }
+      if (low) {
+        setWarning(`Saved. ${low}`);
         return;
       }
       onSaved();

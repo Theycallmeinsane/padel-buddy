@@ -1,4 +1,4 @@
-"""Command line: ``padel-engine calibrate | check-calibration | track | clips | ball | analyze | keypoints``."""
+"""Command line: ``padel-engine calibrate | check-calibration | track | clips | ball | analyze | keypoints | score-tracking``."""
 
 from __future__ import annotations
 
@@ -185,6 +185,38 @@ def analyze(
         _print_ball(result["ball"], out)
     if "report" in result:
         _print_report(result["report"], out)
+
+
+@app.command("score-tracking")
+def score_tracking(
+    run: Path = typer.Argument(..., exists=True, file_okay=False, help="Run folder with tracks.csv."),
+    checks: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, help='JSON list of {"time_s", "x", "y", "name"} checked by hand.'
+    ),
+    names: Optional[str] = typer.Option(None, help="Names the match gives, e.g. P1=Maya,P2=Sara."),
+) -> None:
+    """Score who is who in a run against names checked by hand."""
+    import json
+
+    from .benchmark import Check, score
+    from .pipeline import read_tracks
+
+    given = dict(pair.split("=", 1) for pair in names.split(",")) if names else {}
+    result = score(read_tracks(run / "tracks.csv"), [Check.from_dict(d) for d in json.loads(checks.read_text())], given)
+
+    def pct(v):
+        return "-" if v is None else f"{v:.0%}"
+
+    typer.echo(
+        f"{result['checks']} checks over {result['span_s'] / 60:.1f} min: right {pct(result['right'])}, "
+        f"wrong {pct(result['wrong'])}, missed {pct(result['missed'])}, {result['switches']} switches"
+    )
+    for side, s in result["sides"].items():
+        typer.echo(f"  {side} side: right {pct(s['right'])} of {s['checks']} found")
+    for p in result["people"]:
+        typer.echo(f"  {p['name']}: right {pct(p['right'])}, missed {pct(p['missed'])}, {p['switches']} switches")
+    if result["assumed"]:
+        typer.echo("  assumed names: " + ", ".join(f"{k}={v}" for k, v in sorted(result["assumed"].items())))
 
 
 def _load_config(path: Optional[Path]) -> EngineConfig:

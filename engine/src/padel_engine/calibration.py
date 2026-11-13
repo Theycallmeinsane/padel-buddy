@@ -110,6 +110,38 @@ class Calibration:
         seen = court.KEYPOINTS[next(iter(self.points))]  # a clicked point is always in view
         return depth * (np.array([*seen, 1.0]) @ self.H_inv[2]) > 0
 
+    def camera_height_m(self) -> float | None:
+        """Roughly how high the camera is above the court, in metres; None when the points can't tell.
+
+        The homography alone fixes the camera's position once its focal
+        length is known. Phone cameras have square pixels and the image
+        centre on the lens axis, which leaves the focal length as the only
+        unknown, and the court being flat and square settles it. Clicking
+        errors move the answer by tens of centimetres, which is plenty to
+        tell a phone at head height from one mounted high.
+        """
+        w, h = self.image_size
+        A = np.array([[1, 0, -w / 2], [0, 1, -h / 2], [0, 0, 1]]) @ self.H_inv  # court -> centred pixels
+        A = A / np.abs(A).max()
+        a1, a2 = A[:, 0], A[:, 1]
+        # Two ways to the focal length: the court's axes are at right angles,
+        # and one metre is as long along both. A camera square to the court
+        # makes the first one 0/0, so the better-conditioned one is used.
+        ways = [
+            (-(a1[0] * a2[0] + a1[1] * a2[1]), a1[2] * a2[2]),
+            ((a1[0] ** 2 + a1[1] ** 2) - (a2[0] ** 2 + a2[1] ** 2), a2[2] ** 2 - a1[2] ** 2),
+        ]
+        ways = [(num / den, abs(den)) for num, den in ways if abs(den) > 1e-12 and num / den > 0]
+        f2 = max(ways, key=lambda wd: wd[1])[0] if ways else None
+        if f2 is None or not (0.04 * w * w <= f2 <= 25 * w * w):  # focal length 0.2 to 5 image widths
+            return None
+        B = np.diag([1 / np.sqrt(f2), 1 / np.sqrt(f2), 1.0]) @ A
+        scale = 2.0 / (np.linalg.norm(B[:, 0]) + np.linalg.norm(B[:, 1]))
+        r1, r2, t = B[:, 0] * scale, B[:, 1] * scale, B[:, 2] * scale
+        R = np.column_stack([r1, r2, np.cross(r1, r2)])
+        centre = -R.T @ t
+        return round(float(abs(centre[2])), 2)
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict:

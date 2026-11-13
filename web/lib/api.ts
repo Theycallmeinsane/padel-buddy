@@ -23,12 +23,14 @@ export type Match = {
   video_received: number;
   duration_s: number | null;
   calibrated: boolean;
+  camera_height_m?: number | null; // from the calibration: roughly how high the camera is
   error: string | null;
   player_names?: Record<string, string>; // P1..P4 -> name
   tags?: Tag[];
   fixes?: Fix[];
   cuts?: Cut[]; // clips cut from typed times
   point_edits?: Record<string, [number, number]>; // rally index -> start, end moved by hand
+  checks?: Check[]; // names checked by hand to score the tracking; never fed to it
   job: Job | null;
   live?: Live | null; // while analysing, or after a run that stopped: how far the results so far reach
 };
@@ -48,6 +50,22 @@ export type Tag = {
   not_player?: boolean; // someone the tracking took for a player, e.g. a ball fetcher; no name
 };
 export type TagIn = Omit<Tag, "id" | "applied">;
+
+/** Someone checked who the person at (x, y) is at `time_s`, to score the tracking. The tracking never sees it. */
+export type Check = { id: string; time_s: number; x: number; y: number; name: string };
+export type CheckIn = Omit<Check, "id">;
+
+/** How often the right, wrong or no player's box is under the checked people. Shares are 0..1, null with no checks. */
+export type Tally = { checks: number; right: number | null; wrong: number | null; missed: number | null };
+export type CheckScore = Tally & {
+  switches: number;
+  switches_per_10_min: number | null;
+  span_s: number;
+  people: (Tally & { name: string; switches: number })[];
+  sides: { near: Tally; far: Tally };
+  names: Record<string, string>; // player -> name used for scoring
+  assumed: Record<string, string>; // names given to unnamed players by where the checks landed
+};
 
 /**
  * Who is who put right by hand: from `start_s` the player shown as `player` is
@@ -77,7 +95,11 @@ export type CutIn = Pick<Cut, "start_s" | "end_s" | "name">;
 
 export type UploadStatus = { received: number; total: number | null; complete: boolean };
 export type Keypoint = { name: string; x_m: number; y_m: number };
-export type CalibrationResult = { points_used: string[]; reprojection_error_m: number };
+export type CalibrationResult = {
+  points_used: string[];
+  reprojection_error_m: number;
+  camera_height_m?: number | null; // roughly how high the camera is; null when the points can't tell
+};
 
 export type PlayerStats = {
   player: string;
@@ -424,6 +446,11 @@ export class Api {
   addTag = (id: string, tag: TagIn) =>
     this.request<Match>(`/matches/${id}/tags`, { method: "POST", body: JSON.stringify(tag) });
   deleteTag = (id: string, tagId: string) => this.request<Match>(`/matches/${id}/tags/${tagId}`, { method: "DELETE" });
+  addCheck = (id: string, check: CheckIn) =>
+    this.request<Match>(`/matches/${id}/checks`, { method: "POST", body: JSON.stringify(check) });
+  deleteCheck = (id: string, checkId: string) =>
+    this.request<Match>(`/matches/${id}/checks/${checkId}`, { method: "DELETE" });
+  checkScore = (id: string) => this.request<CheckScore>(`/matches/${id}/checks/score`, { cache: "no-cache" });
   addFix = (id: string, fix: FixIn) =>
     this.request<Match>(`/matches/${id}/fixes`, { method: "POST", body: JSON.stringify(fix) });
   deleteFix = (id: string, fixId: string) => this.request<Match>(`/matches/${id}/fixes/${fixId}`, { method: "DELETE" });

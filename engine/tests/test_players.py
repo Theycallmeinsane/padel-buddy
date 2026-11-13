@@ -374,3 +374,32 @@ def test_someone_tagged_as_not_a_player_is_dropped_with_everyone_who_looks_like_
     assert labels == ["P1", "P3", "P4", "P2", "-", "P2", "-", "P2", "-", "P2"]
     # Named players are kept, and the tag on the fetcher still holds.
     assert repair_identities(segments, cfg, {3: "P2", 6: NOT_A_PLAYER}) == labels
+
+
+def test_brightness_tells_black_from_white_shirts():
+    import numpy as np
+
+    from padel_engine.players import appearance_distance, appearance_of
+
+    frame = np.zeros((200, 200, 3), np.uint8)
+    frame[:, 100:] = 255  # a player in black on the left, one in white on the right
+    black, white = (10, 10, 90, 190), (110, 10, 190, 190)
+    plain = appearance_distance(appearance_of(frame, black), appearance_of(frame, white))
+    bright = appearance_distance(appearance_of(frame, black, True), appearance_of(frame, white, True))
+    assert plain < 0.1  # hue and saturation alone: the same
+    assert bright > 0.9  # with brightness: nothing alike
+
+
+def test_segments_keep_the_shape_of_their_colours(tmp_path):
+    import numpy as np
+
+    from padel_engine.players import Segment, load_segments, save_segments
+
+    for bins in ((18, 4), (18, 4, 4)):
+        a = Segment("P1", 0)
+        a.add(0, np.full(bins, 1 / np.prod(bins), np.float32))
+        b = Segment("P2", 0)
+        b.add(0, None)  # never seen clearly
+        save_segments(tmp_path / "s.json", [a, b])
+        back = load_segments(tmp_path / "s.json")
+        assert back[0].colour.shape == bins and back[1].colour is None
