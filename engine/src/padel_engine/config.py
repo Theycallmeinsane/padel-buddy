@@ -92,6 +92,11 @@ class TrackingConfig(BaseModel):
     )
     duplicate_area_ratio: float = Field(0.4, gt=0, le=1)
     appearance_weight: float = Field(0.5, ge=0)
+    appearance_brightness: bool = Field(
+        False,
+        description="Tell people apart by brightness as well as hue and saturation, so black, grey and white "
+        "shirts stop looking alike. Off until the hand-checked score shows it helps.",
+    )
     track_id_bonus: float = Field(
         0.3,
         ge=0,

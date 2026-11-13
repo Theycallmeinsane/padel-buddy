@@ -51,6 +51,8 @@ class Match(Base):
     cuts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Points whose start and end were moved by hand: {"<rally index>": [start_s, end_s]}. Cleared by a new analysis.
     point_edits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Names checked by hand to score the tracking, never fed to it: [{"id", "time_s", "x", "y", "name"}, ...]
+    checks: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(

@@ -29,6 +29,7 @@ them one by one.
 | `detection` | `PersonTracker` interface; YOLO + ByteTrack implementation |
 | `players` | Four stable player ids from noisy detections, and the repair that fixes swaps after the match is tracked |
 | `tags` | Names someone gave by clicking a player: which track piece each lands on, and which number each name takes; fixes that swap two players from a moment on, by hand |
+| `benchmark` | Scores who is who against names someone checked by hand (never fed to the tracking): right, wrong, missed, switches, near and far side |
 | `analytics` | Kalman smoothing, distance, speed, zones, heatmaps |
 | `render` | Calibration overlay, annotated preview, top-down court |
 | `pipeline` | `run_tracking(...)`, and `run_match(...)`: tracking then clips, the single entry point; `apply_tags(...)` re-decides who is who in a finished run |

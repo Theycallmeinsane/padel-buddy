@@ -56,6 +56,7 @@ _START_SIDE = {"P1": "near", "P2": "near", "P3": "far", "P4": "far"}
 
 _INFEASIBLE = 1e6
 _HIST_BINS = (18, 4)  # hue, saturation
+_HIST_BINS_BRIGHT = (18, 4, 4)  # hue, saturation, brightness: black, grey and white shirts apart
 
 
 @dataclass
@@ -95,14 +96,14 @@ class Segment:
     last: int = -1
     frames: int = 0
     clear: int = 0  # frames whose colours were seen clearly
-    colour_sum: np.ndarray = field(default_factory=lambda: np.zeros(_HIST_BINS))
+    colour_sum: np.ndarray | float = 0.0  # takes the shape of the colours added
     after: int | None = None  # the segment it continues, when cut only because two players parted
 
     def add(self, frame: int, appearance: np.ndarray | None) -> None:
         self.last = frame
         self.frames += 1
         if appearance is not None:
-            self.colour_sum += appearance
+            self.colour_sum = self.colour_sum + appearance.astype(np.float64)
             self.clear += 1
 
     @property
@@ -590,8 +591,14 @@ def unobstructed(boxes: list, max_covered: float = 0.2) -> list[bool]:
     ]
 
 
-def appearance_of(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray | None:
-    """Hue/saturation histogram of the torso (shirt colour is the best cue)."""
+def appearance_of(
+    frame: np.ndarray, bbox: tuple[float, float, float, float], brightness: bool = False
+) -> np.ndarray | None:
+    """Hue/saturation histogram of the torso (shirt colour is the best cue).
+
+    Black, grey and white have almost no saturation, so their hue is noise
+    and they look alike by hue and saturation alone; ``brightness`` adds it.
+    """
     x1, y1, x2, y2 = bbox
     w, h = x2 - x1, y2 - y1
     tx1, tx2 = int(x1 + 0.25 * w), int(x1 + 0.75 * w)
@@ -602,7 +609,10 @@ def appearance_of(frame: np.ndarray, bbox: tuple[float, float, float, float]) ->
     if tx2 - tx1 < 3 or ty2 - ty1 < 3:
         return None
     hsv = cv2.cvtColor(frame[ty1:ty2, tx1:tx2], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, list(_HIST_BINS), [0, 180, 0, 256])
+    if brightness:
+        hist = cv2.calcHist([hsv], [0, 1, 2], None, list(_HIST_BINS_BRIGHT), [0, 180, 0, 256, 0, 256])
+    else:
+        hist = cv2.calcHist([hsv], [0, 1], None, list(_HIST_BINS), [0, 180, 0, 256])
     total = hist.sum()
     return (hist / total).astype(np.float32) if total > 0 else None
 
@@ -616,21 +626,24 @@ def appearance_distance(a: np.ndarray | None, b: np.ndarray | None) -> float:
 
 def save_segments(path: str | Path, segments: list[Segment]) -> None:
     """Every segment with its colours, so who is who can be decided again (after a tag) without re-tracking."""
+    bins = next((s.colour.shape for s in segments if s.clear), _HIST_BINS)
     rows = []
     for s in segments:
-        colour = s.colour if s.clear else np.zeros(_HIST_BINS)
+        colour = s.colour if s.clear else np.zeros(bins)
         rows.append({
             "player": s.player_id, "first": s.first, "last": s.last, "frames": s.frames, "clear": s.clear,
             "after": s.after, "colour": [round(float(v), 4) or 0 for v in colour.reshape(-1)],
         })
-    Path(path).write_text(json.dumps({"version": 1, "segments": rows}, separators=(",", ":")))
+    data = {"version": 2, "bins": list(bins), "segments": rows}
+    Path(path).write_text(json.dumps(data, separators=(",", ":")))
 
 
 def load_segments(path: str | Path) -> list[Segment]:
     data = json.loads(Path(path).read_text())
+    bins = tuple(data.get("bins", _HIST_BINS))  # version 1 had no brightness
     segments = []
     for r in data["segments"]:
         s = Segment(r["player"], r["first"], r["last"], r["frames"], r["clear"], after=r["after"])
-        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(_HIST_BINS) * s.clear
+        s.colour_sum = np.array(r["colour"], dtype=np.float64).reshape(bins) * s.clear
         segments.append(s)
     return segments
