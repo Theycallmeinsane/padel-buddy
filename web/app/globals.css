@@ -139,6 +139,9 @@ th { color: var(--muted); font-weight: 500; }
   background: rgba(0, 0, 0, 0.6); padding: 0 4px; border-radius: 4px;
 }
 .court-diagram { width: 100%; max-width: 180px; }
+/* Court lines from "Find the court for me", drawn over the frame in its own pixels. */
+.frame .fit-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.frame .fit-lines polyline { fill: none; stroke: #ffd60a; stroke-width: 2; vector-effect: non-scaling-stroke; }
 
 .steps { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .steps span { font-size: 0.8rem; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }

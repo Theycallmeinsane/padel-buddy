@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Api, ApiError, type Keypoint } from "@/lib/api";
+import { Api, ApiError, type AutoCalibration, type Keypoint } from "@/lib/api";
 import { formatTime } from "./common";
 import { cameraAdvice } from "@/lib/checks";
 
@@ -34,6 +34,9 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
   const [saving, setSaving] = useState(false);
   // Saved, but the points disagree: stay open so they can be fixed, or kept on purpose.
   const [warning, setWarning] = useState<string | null>(null);
+  // Points proposed by "Find the court for me", with the court lines it fitted, until a point is clicked.
+  const [auto, setAuto] = useState<AutoCalibration | null>(null);
+  const [finding, setFinding] = useState(false);
   const img = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -49,15 +52,46 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
     const r = img.current.getBoundingClientRect();
     const x = ((e.clientX - r.left) * img.current.naturalWidth) / r.width;
     const y = ((e.clientY - r.top) * img.current.naturalHeight) / r.height;
+    setAuto(null); // a hand-placed point replaces the proposal's lines with the points themselves
     setPoints({ ...points, [current.name]: [Math.round(x * 10) / 10, Math.round(y * 10) / 10] });
     setOrder([...order.filter((n) => n !== current.name), current.name]);
     setStep(step + 1);
+  }
+
+  async function findCourt() {
+    setFinding(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const found = await api.autoCalibration(matchId, t);
+      const known = keypoints.filter((k) => k.name in found.points).map((k) => k.name);
+      setPoints(Object.fromEntries(known.map((n) => [n, found.points[n]])));
+      setOrder(known);
+      setStep(keypoints.length);
+      setAuto(found);
+    } catch (e) {
+      setAuto(null);
+      setError(
+        (e instanceof ApiError ? e.message : (e as Error).message) +
+          " You can try another frame with the slider, or click the points yourself.",
+      );
+    } finally {
+      setFinding(false);
+    }
+  }
+
+  function clearAll() {
+    setPoints({});
+    setOrder([]);
+    setStep(0);
+    setAuto(null);
   }
 
   function undo() {
     const last = order[order.length - 1];
     if (!last) return;
     const { [last]: _, ...rest } = points;
+    setAuto(null);
     setPoints(rest);
     setOrder(order.slice(0, -1));
     setStep(keypoints.findIndex((k) => k.name === last));
@@ -94,8 +128,9 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
   return (
     <div>
       <p className="small muted" style={{ marginTop: 0 }}>
-        Click each highlighted point on the frame where the court lines meet the floor. Skip any point you
-        can&apos;t see. Four points is the minimum; six or more spread over the court work best.
+        Press <strong>Find the court for me</strong> to have the court found from its white lines, or click each
+        highlighted point on the frame where the court lines meet the floor. Skip any point you can&apos;t see.
+        Four points is the minimum; six or more spread over the court work best.
       </p>
       <div className="calib">
         <div>
@@ -108,6 +143,13 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
               onClick={click}
               onLoad={(e) => setSize([e.currentTarget.naturalWidth, e.currentTarget.naturalHeight])}
             />
+            {size && auto && (
+              <svg className="fit-lines" viewBox={`0 0 ${size[0]} ${size[1]}`} preserveAspectRatio="none" aria-hidden>
+                {auto.lines.map((line, i) => (
+                  <polyline key={i} points={line.map(([x, y]) => `${x},${y}`).join(" ")} />
+                ))}
+              </svg>
+            )}
             {size &&
               Object.entries(points).map(([name, [x, y]]) => (
                 <div key={name} className="pt" style={{ left: `${(x / size[0]) * 100}%`, top: `${(y / size[1]) * 100}%` }}>
@@ -164,9 +206,22 @@ export default function Calibrator({ api, matchId, durationS, onSaved, onCancel 
             )}
           </p>
           <div className="row small">
+            <button onClick={findCourt} disabled={finding || !keypoints.length}>
+              {finding ? "Looking for the lines…" : "Find the court for me"}
+            </button>
+          </div>
+          <div className="row small" style={{ marginTop: 8 }}>
             <button onClick={() => setStep(step + 1)} disabled={!current}>Skip</button>
             <button onClick={undo} disabled={!order.length}>Undo</button>
+            <button onClick={clearAll} disabled={!order.length}>Clear</button>
           </div>
+          {auto && (
+            <p className="small" role="status">
+              Found from the lines in {auto.frames_used} frame{auto.frames_used === 1 ? "" : "s"}, camera about{" "}
+              {auto.camera_height_m.toFixed(1)} m high. Check the yellow lines sit on the court lines, then Save.
+              The far end could be off by about {Math.max(5, Math.round(auto.far_error_m * 100))} cm.
+            </p>
+          )}
           <p className="small muted">{count} point{count === 1 ? "" : "s"} placed</p>
           <div className="row">
             <button className="primary" onClick={save} disabled={count < 4 || saving || !size}>

@@ -119,6 +119,17 @@ def test_calibration_validation(client):
     assert len(client.get("/court/keypoints").json()) == len(court.KEYPOINTS)
 
 
+def test_auto_calibration_proposes_points_or_says_why(client, tmp_path):
+    m = client.post("/matches", json={"title": "x"}).json()
+    assert client.post(f"/matches/{m['id']}/calibration/auto").status_code == 409  # no video yet
+    data = make_video(tmp_path / "v.mp4").read_bytes()
+    client.put(f"/matches/{m['id']}/video", content=data)
+    # A tiny test video has no court in it: the reason comes back, and nothing is saved.
+    r = client.post(f"/matches/{m['id']}/calibration/auto", params={"t": 1})
+    assert r.status_code == 422 and "click the points" in r.json()["detail"].lower()
+    assert client.get(f"/matches/{m['id']}").json()["calibrated"] is False
+
+
 def test_job_lifecycle_with_fake_engine(client, settings, tmp_path):
     data = make_video(tmp_path / "v.mp4").read_bytes()
     m = client.post("/matches", json={"title": "x"}).json()

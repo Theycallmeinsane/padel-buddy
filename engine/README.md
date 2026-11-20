@@ -27,7 +27,9 @@ pip install -e ".[coach]"
 ## Use
 
 ```bash
-# Once per camera position: click court keypoints on a frame.
+# Once per camera position: find the court from its white lines...
+padel-engine auto-calibrate match.mp4 --out calibration.json
+# ...or, when that can't, click court keypoints on a frame.
 padel-engine calibrate match.mp4 --out calibration.json
 
 # Track the four players.
@@ -59,6 +61,19 @@ shot. Four points is the minimum; the far corners plus both ends of both
 service lines (six points) is a good set for a camera behind the court. It
 also writes `calibration.check.jpg` with the fitted court drawn over the
 frame, so you can confirm the yellow lines sit on the real ones.
+
+`auto-calibrate` needs no clicks. It combines six frames from a minute of
+video (so players don't hide the lines), finds the floor by its colour and
+fits the court to the near service line, the centre line and the floor's
+side edges, assuming a phone camera (square pixels, lens centred). The far
+corners and far service line then come from geometry rather than from
+clicks, checked against the far service line, the far wall and the net's
+white tape. A fit that doesn't hold up is refused with the reason (for
+example "neither side edge matches the floor"), and `calibrate` is the way
+out. It writes the same calibration file, plus `calibration.check.jpg`. The
+web app offers the same as **Find the court for me**. Expect it to struggle
+with a floor whose colour is close to the surround, a camera that can't see
+either side edge, or very dark footage.
 
 A calibration also tells roughly how high the camera is
 (`Calibration.camera_height_m`). Below about 2 m the net hides the far

@@ -6,6 +6,7 @@ Flow for one match:
     PUT  /matches/{id}/video              upload, in resumable chunks (Content-Range)
     GET  /matches/{id}/frame?t=5          a still frame to click the court on
     PUT  /matches/{id}/calibration        the clicked points (optional: enables tracking)
+    POST /matches/{id}/calibration/auto   find the court from its lines; proposes points, saves nothing
     POST /matches/{id}/analyze            queue the engine
     GET  /matches/{id}                    status and progress, and how far live results reach
     GET  /matches/{id}/results            tracking, clips, ball, shots and report (so far, while analysing)
@@ -54,7 +55,7 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, CheckIn, CheckOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
+    AnalyzeIn, AutoCalibrationOut, CalibrationIn, CalibrationOut, CheckIn, CheckOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
     MatchOut, PersonOut, PlayerNamesIn, PointEditIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
@@ -287,6 +288,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return CalibrationOut(
             points_used=sorted(calib.points), reprojection_error_m=calib.reprojection_error_m,
             camera_height_m=calib.camera_height_m(),
+        )
+
+    @app.post("/matches/{match_id}/calibration/auto", dependencies=auth)
+    def auto_calibration(match: Match = Depends(load_match), t: float = Query(5.0, ge=0)) -> AutoCalibrationOut:
+        """Find the court from its white lines; proposes points, saves nothing.
+
+        Frames from a minute of video starting at ``t`` are combined, so players
+        walking over the lines don't hide them.
+        """
+        from padel_engine.autocalibrate import AutoCalibrationError, auto_calibrate
+        from padel_engine.render import court_polylines
+        from padel_engine.video import read_frame
+
+        if not _uploaded(match):
+            raise HTTPException(409, "Upload the video first")
+        video = storage.video_path(match.id, match.video_ext)
+        frames = []
+        for dt in range(0, 60, 10):
+            try:
+                frames.append(read_frame(video, t + dt))
+            except ValueError:
+                break
+        if not frames:
+            raise HTTPException(400, f"Could not read a frame at {t}s")
+        try:
+            found = auto_calibrate(frames)
+        except AutoCalibrationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        calib = found.calibration
+        return AutoCalibrationOut(
+            image_size=calib.image_size,
+            points={n: (float(u), float(v)) for n, (u, v) in calib.points.items()},
+            lines=[[(round(float(u), 1), round(float(v), 1)) for u, v in line] for _, line in court_polylines(calib)],
+            support=found.support, spread_px=round(found.rms_px, 2), far_error_m=round(found.far_error_m, 2),
+            camera_height_m=round(found.camera_height_m, 2), frames_used=found.frames_used,
         )
 
     @app.delete("/matches/{match_id}/calibration", status_code=204, dependencies=auth)

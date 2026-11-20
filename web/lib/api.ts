@@ -101,6 +101,17 @@ export type CalibrationResult = {
   camera_height_m?: number | null; // roughly how high the camera is; null when the points can't tell
 };
 
+export type AutoCalibration = {
+  image_size: [number, number];
+  points: Record<string, [number, number]>; // proposed keypoints, saved like clicked ones
+  lines: [number, number][][]; // the court lines as the fit sees them, in image pixels
+  support: Record<string, number>; // per line or edge: share of it found in the picture
+  spread_px: number;
+  far_error_m: number; // roughly how far off the far service line could be
+  camera_height_m: number;
+  frames_used: number;
+};
+
 export type PlayerStats = {
   player: string;
   team: string;
@@ -421,6 +432,9 @@ export class Api {
       method: "PUT",
       body: JSON.stringify({ image_size: imageSize, points }),
     });
+  // Finds the court from its white lines; proposes points, saves nothing. Takes 10-30 s.
+  autoCalibration = (id: string, t: number) =>
+    this.request<AutoCalibration>(`/matches/${id}/calibration/auto?t=${t}`, { method: "POST" });
   clearCalibration = (id: string) => this.request<void>(`/matches/${id}/calibration`, { method: "DELETE" });
   analyze = (id: string, config?: object) =>
     this.request<Job>(`/matches/${id}/analyze`, { method: "POST", body: JSON.stringify({ config: config ?? null }) });
