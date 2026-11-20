@@ -95,3 +95,35 @@ def test_lines_behind_the_camera_are_not_drawn():
     left = lines["left_wall"]
     assert len(left) < 50
     np.testing.assert_allclose(calib.image_to_court(left)[:, 0], 0.0, atol=1e-6)
+
+
+def _phone_calibration(height_m: float, focal_px: float = 1500.0, yaw_m: float = 0.0):
+    """Keypoints as a phone at the near wall, ``height_m`` up and looking at the court, would see them."""
+    import numpy as np
+
+    from padel_engine import court
+    from padel_engine.calibration import Calibration
+
+    w, h = 1920, 1080
+    eye = np.array([5.0, -0.3, height_m])
+    look = np.array([5.0 + yaw_m, 12.0, 0.0]) - eye
+    fwd = look / np.linalg.norm(look)
+    right = np.cross(fwd, [0.0, 0.0, 1.0])
+    right /= np.linalg.norm(right)
+    down = np.cross(fwd, right)
+    pts = {}
+    for name, (x, y) in court.KEYPOINTS.items():
+        d = np.array([x, y, 0.0]) - eye
+        z = d @ fwd
+        u, v = w / 2 + focal_px * (d @ right) / z, h / 2 + focal_px * (d @ down) / z
+        if z > 0 and 0 <= u < w and 0 <= v < h:
+            pts[name] = (float(u), float(v))
+    return Calibration.from_points(pts, (w, h))
+
+
+def test_camera_height_is_found_from_the_court():
+    for height in (1.3, 2.5, 3.0):
+        for focal in (1100.0, 1600.0):
+            for yaw in (0.0, -1.5, 2.0):  # square to the court, or turned a little
+                got = _phone_calibration(height, focal, yaw).camera_height_m()
+                assert got is not None and abs(got - height) < 0.05, (height, focal, yaw, got)

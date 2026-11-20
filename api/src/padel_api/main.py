@@ -19,6 +19,9 @@ Flow for one match:
     GET  /matches/{id}/cuts/{cut}/video   one cut, to play (H.264)
     GET  /matches/{id}/cuts/{cut}/original  one cut, to download in the camera's quality
     DELETE /matches/{id}/cuts/{cut}       delete a cut
+    POST /matches/{id}/checks             a name checked by hand, to score the tracking (never fed to it)
+    DELETE /matches/{id}/checks/{check}   take a check back
+    GET  /matches/{id}/checks/score       how often the tracking names the checked people right
     PUT  /matches/{id}/points/{n}         move point n's start and end by hand: {"start_s", "end_s"}
     DELETE /matches/{id}/points/{n}       back to the split the analysis found
     GET  /matches/{id}/players/{P1..P4}   one player: numbers, shots, highlights, reel
@@ -51,7 +54,7 @@ from sqlalchemy.orm import Session
 from . import __version__, jobs
 from .db import Database, Job, Match, new_id, now
 from .schemas import (
-    AnalyzeIn, CalibrationIn, CalibrationOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
+    AnalyzeIn, CalibrationIn, CalibrationOut, CheckIn, CheckOut, CutOut, CutsIn, FixIn, FixOut, JobOut, Keypoint, LiveOut, MatchCreate,
     MatchOut, PersonOut, PlayerNamesIn, PointEditIn, PlayerOut, TagIn, TagOut, UploadStatus,
 )
 from .settings import Settings, get_settings
@@ -281,7 +284,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         match = session.merge(match)
         match.calibration = calib.to_dict()
         session.commit()
-        return CalibrationOut(points_used=sorted(calib.points), reprojection_error_m=calib.reprojection_error_m)
+        return CalibrationOut(
+            points_used=sorted(calib.points), reprojection_error_m=calib.reprojection_error_m,
+            camera_height_m=calib.camera_height_m(),
+        )
 
     @app.delete("/matches/{match_id}/calibration", status_code=204, dependencies=auth)
     def clear_calibration(match: Match = Depends(load_match), session: Session = session_dep) -> Response:
@@ -431,6 +437,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if gone.get("applied"):
             queue_relabel(session, match)
         return match_out(match)
+
+    # -- checking the tracking ---------------------------------------------
+
+    @app.post("/matches/{match_id}/checks", status_code=201, dependencies=auth)
+    def add_check(body: CheckIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        """Say who the person at a spot is, to score the tracking. Nothing is re-analysed.
+
+        A second check on the same moment and spot replaces the first, so a
+        wrong click is put right by clicking again.
+        """
+        name = _clean_name(body.name)
+        if not name:
+            raise HTTPException(422, "Give the player a name")
+        match = session.merge(match)
+        names = [*(match.player_names or {}).values(), *(c["name"] for c in match.checks or [])]
+        name = next((n for n in names if _same_name(n, name)), name)
+        kept = [
+            c for c in match.checks or []
+            if not (abs(c["time_s"] - body.time_s) < 0.05 and abs(c["x"] - body.x) < 30 and abs(c["y"] - body.y) < 30)
+        ]
+        check = {"id": new_id()[:12], "time_s": round(body.time_s, 3), "x": round(body.x, 1), "y": round(body.y, 1),
+                 "name": name}
+        match.checks = [*kept, check]
+        session.commit()
+        return match_out(match)
+
+    @app.delete("/matches/{match_id}/checks/{check_id}", dependencies=auth)
+    def delete_check(check_id: str, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
+        match = session.merge(match)
+        checks = list(match.checks or [])
+        if not any(c["id"] == check_id for c in checks):
+            raise HTTPException(404, "No such check")
+        match.checks = [c for c in checks if c["id"] != check_id] or None
+        session.commit()
+        return match_out(match)
+
+    @app.get("/matches/{match_id}/checks/score", dependencies=auth)
+    def check_score(match: Match = Depends(load_match)) -> dict:
+        """How often the latest who-is-who names the checked people right, wrong, or not at all."""
+        from padel_engine.benchmark import Check, score
+        from padel_engine.pipeline import read_tracks
+
+        tracks = storage.run_dir(match.id) / "tracks.csv"
+        if not tracks.exists():
+            raise HTTPException(409, "The players aren't tracked yet: calibrate the court and analyse the match")
+        if not match.checks:
+            raise HTTPException(409, "Check some names first")
+        return score(read_tracks(tracks), [Check.from_dict(c) for c in match.checks], match.player_names or {})
 
     @app.post("/matches/{match_id}/fixes", status_code=201, dependencies=auth)
     def add_fix(body: FixIn, match: Match = Depends(load_match), session: Session = session_dep) -> MatchOut:
@@ -811,14 +865,28 @@ def _match_out(match: Match, run: Path | None = None) -> MatchOut:
     return MatchOut(
         id=match.id, title=match.title, created_at=match.created_at, status=match.status,
         video_size=match.video_size, video_received=match.video_received, duration_s=match.duration_s,
-        calibrated=match.calibration is not None, error=match.error, player_names=match.player_names or {},
+        calibrated=match.calibration is not None, camera_height_m=_camera_height(match.calibration),
+        error=match.error, player_names=match.player_names or {},
         tags=[TagOut.model_validate(t) for t in match.tags or []],
         fixes=[FixOut.model_validate(f) for f in match.fixes or []],
         cuts=[CutOut.model_validate(c) for c in match.cuts or []],
         point_edits={k: tuple(v) for k, v in (match.point_edits or {}).items()},
+        checks=[CheckOut.model_validate(c) for c in match.checks or []],
         job=_job_out(latest) if latest else None,
         live=_live(run) if run is not None and match.status != "done" else None,
     )
+
+
+def _camera_height(calibration: dict | None) -> float | None:
+    if not calibration:
+        return None
+    from padel_engine.calibration import Calibration, CalibrationError
+
+    try:
+        points = {n: (float(u), float(v)) for n, (u, v) in calibration["points"].items()}
+        return Calibration.from_points(points, tuple(calibration["image_size"])).camera_height_m()
+    except (CalibrationError, KeyError, TypeError, ValueError):
+        return None
 
 
 def _live(run: Path) -> LiveOut | None:

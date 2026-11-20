@@ -44,6 +44,10 @@ padel-engine report --out runs/match1 --video match.mp4
 
 # Or everything in one go (tracking, the ball and the report only if -c is given).
 padel-engine analyze match.mp4 -c calibration.json --out runs/match1
+
+# Score who is who against names checked by hand (a JSON list of
+# {"time_s", "x", "y", "name"}, as the web app's "Check the tracking" saves them).
+padel-engine score-tracking runs/match1 checks.json --names P1=Maya,P2=Sara
 ```
 
 FFmpeg must be installed for clips (`brew install ffmpeg`, `apt install ffmpeg`,
@@ -55,6 +59,11 @@ shot. Four points is the minimum; the far corners plus both ends of both
 service lines (six points) is a good set for a camera behind the court. It
 also writes `calibration.check.jpg` with the fitted court drawn over the
 frame, so you can confirm the yellow lines sit on the real ones.
+
+A calibration also tells roughly how high the camera is
+(`Calibration.camera_height_m`). Below about 2 m the net hides the far
+players' legs, which is what tells players in similar shirts apart; 2.5 to
+3 m up behind the back glass works best.
 
 The calibration is reused for every video from the same camera position,
 and it scales automatically if you record at another resolution.

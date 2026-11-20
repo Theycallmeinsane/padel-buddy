@@ -19,6 +19,7 @@ app, phones, an Android app and a desktop app.
 | 4 | Ball tracking, shots, how points ended, match report, success rate per shot, per-player highlights and winners, shorts, a clip per point | Built, awaiting real footage |
 | 4 | Naming players by clicking them, at setup or any moment while watching; a tag after a mix-up fixes the rest of the match | Built |
 | 4 | Cutting clips from the full match at times you type in | Built |
+| 4 | Checking the tracking: name players by hand on frames every 3 s, and get a score for who is who | Built |
 | 4 | Live results: points first, then stats, shots and the report every few minutes while a match is analysed | Built |
 | 5 | Pose (forehand / backhand, technique), automatic court detection | Later |
 

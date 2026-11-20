@@ -996,3 +996,41 @@ def test_point_downloads_run_on_and_can_be_moved_by_hand(client, settings, tmp_p
     client.put(f"{url}/1", json={"start_s": 2, "end_s": 6})
     client.post(f"/matches/{m['id']}/analyze")  # a new analysis numbers the points afresh
     assert client.get(f"/matches/{m['id']}").json()["point_edits"] == {}
+
+
+def test_names_checked_by_hand_score_the_tracking_without_changing_it(client, settings):
+    mid = client.post("/matches", json={"title": "x"}).json()["id"]
+    assert client.get(f"/matches/{mid}/checks/score").status_code == 409  # nothing tracked yet
+
+    run = settings.data_dir / "matches" / mid / "run"
+    run.mkdir(parents=True)
+    header = "frame,time_s,player,team,track_id,confidence,x1,y1,x2,y2,court_x,court_y,segment\n"
+    rows = [
+        "0,0.0,P1,A,1,0.9,100,100,150,250,3,4,0",
+        "0,0.0,P3,B,2,0.9,300,50,330,120,3,15,1",
+        "30,3.0,P3,B,1,0.9,100,100,150,250,3,4,2",  # Maya's box now carries P3
+        "30,3.0,P1,A,2,0.9,300,50,330,120,3,15,3",
+    ]
+    (run / "tracks.csv").write_text(header + "\n".join(rows) + "\n")
+    client.put(f"/matches/{mid}/players", json={"names": {"P1": "Maya"}})
+
+    def check(t, x, y, name):
+        r = client.post(f"/matches/{mid}/checks", json={"time_s": t, "x": x, "y": y, "name": name})
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    check(0, 120, 200, "maya")  # the spelling the match already uses is kept
+    check(0, 310, 80, "Sara")
+    check(3, 120, 200, "Maya")
+    check(3, 310, 80, "Sara")
+    out = check(3, 312, 82, "Noor")  # a click on the same spot again replaces the first
+    assert [c["name"] for c in out["checks"]] == ["Maya", "Sara", "Maya", "Noor"]
+    assert out["tags"] == [] and out["status"] == "created"  # the tracking never sees checks
+
+    s = client.get(f"/matches/{mid}/checks/score").json()
+    assert s["checks"] == 4 and s["right"] == 0.5 and s["wrong"] == 0.5 and s["switches"] == 1
+    assert s["assumed"] == {"P3": "Sara"}
+
+    gone = out["checks"][-1]["id"]
+    assert len(client.delete(f"/matches/{mid}/checks/{gone}").json()["checks"]) == 3
+    assert client.delete(f"/matches/{mid}/checks/{gone}").status_code == 404

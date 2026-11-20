@@ -115,7 +115,8 @@ def run_tracking(
                 ]
             court_xy = calib.image_to_court(np.array([d.foot_point for d in detections]).reshape(-1, 2))
             candidates = [
-                Candidate(d, xy, appearance_of(frame, d.bbox)) for d, xy in zip(detections, court_xy)
+                Candidate(d, xy, appearance_of(frame, d.bbox, cfg.tracking.appearance_brightness))
+                for d, xy in zip(detections, court_xy)
             ]
             assigned = assigner.assign(t, candidates)
 

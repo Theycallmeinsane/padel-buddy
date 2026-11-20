@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Calibrator from "@/components/Calibrator";
+import CheckTracking from "@/components/CheckTracking";
 import Cuts from "@/components/Cuts";
 import MatchViewer from "@/components/MatchViewer";
 import Report from "@/components/Report";
@@ -11,6 +12,7 @@ import Results from "@/components/Results";
 import { PlayerTagger } from "@/components/Tags";
 import { ProgressBar, StatusBadge, formatBytes, formatTime } from "@/components/common";
 import { Api, ApiError, type FixIn, type Match, type Results as ResultsData, type TagIn } from "@/lib/api";
+import { cameraAdvice } from "@/lib/checks";
 import { LABEL_GOAL, labelCounts, labelGap, labelsToDo, liveNames, suggestions } from "@/lib/tags";
 
 // Static export can't pre-render one page per match, so the id is a query
@@ -267,6 +269,9 @@ function MatchView() {
                   ? "Court calibrated: analysis will track the four players as well as cut clips."
                   : "Clips and highlights work straight away. Calibrate the court once to also track the players."}
               </p>
+              {cameraAdvice(match.camera_height_m) && (
+                <p className="small muted live-note">{cameraAdvice(match.camera_height_m)}</p>
+              )}
               <div className="row">
                 <button onClick={() => setCalibrating(true)} disabled={busy}>
                   {match.calibrated ? "Recalibrate court" : "Calibrate court"}
@@ -358,6 +363,10 @@ function MatchView() {
           onEdit={match.status === "done" ? editPoint : undefined}
           onReset={resetPoint}
         />
+      )}
+
+      {match.status === "done" && match.calibrated && results?.tracking && (
+        <CheckTracking api={api} match={match} names={names} onMatch={setMatch} />
       )}
 
       {error && <p className="error small">{error}</p>}
