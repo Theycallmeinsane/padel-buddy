@@ -1,4 +1,4 @@
-"""Command line: ``padel-engine calibrate | check-calibration | track | clips | ball | analyze | keypoints | score-tracking``."""
+"""Command line: ``padel-engine calibrate | auto-calibrate | check-calibration | track | clips | ball | analyze | keypoints | score-tracking``."""
 
 from __future__ import annotations
 
@@ -39,6 +39,34 @@ def calibrate(
     check = out.with_suffix(".check.jpg")
     cv2.imwrite(str(check), draw_court_on_frame(frame, calib))
     typer.echo(f"Saved {out} ({len(calib.points)} points, mean error {calib.reprojection_error_m * 100:.1f} cm)")
+    typer.echo(f"Check the overlay in {check}: the yellow lines should sit on the court lines.")
+
+
+@app.command("auto-calibrate")
+def auto_calibrate_cmd(
+    video: Path = typer.Argument(..., exists=True, dir_okay=False),
+    out: Path = typer.Option(Path("calibration.json"), help="Where to save the calibration."),
+    at: float = typer.Option(5.0, help="Start (s) of the minute of video to look at."),
+) -> None:
+    """Find the court from its white lines, without clicking; falls back to `calibrate` when it can't."""
+    from .autocalibrate import AutoCalibrationError, auto_calibrate
+
+    frames = []
+    for dt in range(0, 60, 10):
+        try:
+            frames.append(read_frame(video, at + dt))
+        except ValueError:
+            break
+    try:
+        found = auto_calibrate(frames)
+    except AutoCalibrationError as exc:
+        typer.echo(str(exc), err=True)
+        typer.echo(f"Run: padel-engine calibrate {video}", err=True)
+        raise typer.Exit(1) from exc
+    found.calibration.save(out)
+    check = out.with_suffix(".check.jpg")
+    cv2.imwrite(str(check), draw_court_on_frame(frames[0], found.calibration))
+    typer.echo(f"Saved {out}: {found.summary()}")
     typer.echo(f"Check the overlay in {check}: the yellow lines should sit on the court lines.")
 
 

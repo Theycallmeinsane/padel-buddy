@@ -55,7 +55,7 @@ wrote and adds its own to the match's run folder:
 
 | Stage | Module | Writes |
 | --- | --- | --- |
-| Calibration | `calibration`, `court` | `calibration_check.jpg` |
+| Calibration | `calibration`, `autocalibrate`, `court` | `calibration_check.jpg` |
 | Player tracking | `detection`, `players`, `analytics`, `pipeline` | `tracks.csv`, `overlay.json`, `summary.json`, `heatmaps/` |
 | Points and clips | `audio`, `events`, `clips` | `hits.csv`, `clips.json`, `clips/`, `highlights.mp4`, `condensed.mp4`, `points/` |
 | Ball tracking | `ball` | `ball_track.json`, `ball.json` |
@@ -71,7 +71,7 @@ cd engine
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[detect,calibrate,dev]"   # install PyTorch for your GPU first
 
-padel-engine calibrate path/to/match.mp4 --out data/calibration.json
+padel-engine auto-calibrate path/to/match.mp4 --out data/calibration.json   # or `calibrate` to click the points
 padel-engine analyze path/to/match.mp4 -c data/calibration.json --out runs/match1
 ```
 

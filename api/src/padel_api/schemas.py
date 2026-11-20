@@ -167,6 +167,17 @@ class CalibrationOut(BaseModel):
     camera_height_m: float | None = None  # roughly how high the camera is; None when the points can't tell
 
 
+class AutoCalibrationOut(BaseModel):
+    image_size: tuple[int, int]
+    points: dict[str, tuple[float, float]]  # proposed keypoints, ready to PUT as a calibration
+    lines: list[list[tuple[float, float]]]  # the court lines as the fit sees them, image pixels, to draw
+    support: dict[str, float]  # per line or edge: share of it the fit found in the picture
+    spread_px: float  # how far the line pixels sit from the fitted lines
+    far_error_m: float  # roughly what that spread means in depth at the far service line
+    camera_height_m: float
+    frames_used: int
+
+
 class AnalyzeIn(BaseModel):
     config: dict | None = Field(None, description="EngineConfig overrides, e.g. {'clips': {'pre_s': 20}}")
 
