@@ -39,7 +39,7 @@ and the painted lines are white.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import permutations
 
 import cv2
@@ -192,9 +192,28 @@ def _find(img: np.ndarray) -> _Found:
     first = None
     for rows in FLOOR_SAMPLES:
         try:
-            return _find_on(_scene(img, rows))
+            sc = _scene(img, rows)
+            try:
+                return _find_on(sc)
+            except AutoCalibrationError as exc:
+                if len(sc.sides) < 2:
+                    raise
+                both = exc
+            # A dusty patch or a shadow can fake one side edge; try each side on its own.
+            for keep in sc.sides:
+                try:
+                    return _find_on(replace(sc, sides={keep: sc.sides[keep]}))
+                except AutoCalibrationError:
+                    pass
+            raise both
         except AutoCalibrationError as exc:
             first = first or exc
+        except (ValueError, IndexError, np.linalg.LinAlgError, cv2.error) as exc:
+            # A degenerate picture (no usable pixels left for some step) is a failed try, not a crash.
+            first = first or AutoCalibrationError(
+                f"The court finder got stuck on this frame ({type(exc).__name__}). "
+                "Try another frame with the slider, or click the points instead."
+            )
     raise first
 
 
@@ -242,6 +261,10 @@ def _find_on(sc: _Scene) -> _Found:
         p = p if q is None else q
     groups = _assign(sc, p, 2.0)
     used = [n for n, g in groups if len(g)]
+    if not used:
+        raise AutoCalibrationError(
+            "None of the court lines were found where the fit puts them. Click the points instead."
+        )
     d = np.concatenate([_dist(p, n, g, w, h) for n, g in groups if len(g)])
     rms = float(np.sqrt(np.mean(np.minimum(d, 4.0) ** 2)))
     _, support = _score(sc, p) or (0.0, {})
@@ -332,16 +355,64 @@ def _scene(img: np.ndarray, rows: tuple[float, float] = FLOOR_SAMPLES[0]) -> _Sc
 
 
 def _floor_mask(img: np.ndarray, rows: tuple[float, float] = FLOOR_SAMPLES[0]) -> np.ndarray:
-    """The court floor: pixels the colour of a box in the middle of the frame, joined to it."""
-    h, w = img.shape[:2]
+    """The court floor: pixels the colour of a box in the middle of the frame, joined to it.
+
+    White lines cut the floor into pieces, and the pieces can be lit differently (the near
+    end under the camera's own glass is often darker), so the other sample boxes are read
+    too and their pieces join in when they are the same colour of floor.
+    """
+    w = img.shape[1]
     lab = cv2.cvtColor(cv2.GaussianBlur(img, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    ab_ref, floor = _floor_piece(lab, rows)
+    if floor is None:
+        raise AutoCalibrationError("Couldn't find the court floor at the bottom of the frame. Click the points instead.")
+    for other in FLOOR_SAMPLES:
+        if other == rows:
+            continue
+        try:
+            ab, piece = _floor_piece(lab, other, min_chroma=3.0)
+        except AutoCalibrationError:
+            continue
+        if piece is None or (piece & ~floor).sum() < w:  # nothing new
+            continue
+        ratio = np.linalg.norm(ab) / np.linalg.norm(ab_ref)
+        same_hue = ab @ ab_ref / (np.linalg.norm(ab) * np.linalg.norm(ab_ref)) > 0.95
+        # Only a piece that meets this one along a long border, as across a painted line.
+        k = (w // 24) | 1
+        near = cv2.dilate(floor.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+        if same_hue and 0.25 < ratio < 4.0 and (near & piece).sum() > w:
+            # The line between the two pieces is court too: whatever has one piece on one
+            # side and the other on the opposite side, close by, straight across or up.
+            floor = floor | piece | _between(floor, piece, k)
+    floor = floor.astype(np.uint8)
+    # Fill holes (lines, players, the net) so the floor is one solid region.
+    cnts, _ = cv2.findContours(floor, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    cv2.drawContours(floor, cnts, -1, 1, thickness=cv2.FILLED)
+    return floor.astype(bool)
+
+
+def _between(a: np.ndarray, b: np.ndarray, k: int) -> np.ndarray:
+    """Pixels with ``a`` within k pixels on one side and ``b`` on the opposite side."""
+    out = np.zeros(a.shape, bool)
+    for shape, before, after in (((k, 1), (0, k - 1), (0, 0)), ((1, k), (k - 1, 0), (0, 0))):
+        kern = np.ones(shape, np.uint8)
+        a0, a1, b0, b1 = (cv2.dilate(m.astype(np.uint8), kern, anchor=anc).astype(bool)
+                          for m, anc in ((a, before), (a, after), (b, before), (b, after)))
+        out |= (a0 & b1) | (b0 & a1)
+    return out
+
+
+def _floor_piece(lab: np.ndarray, rows: tuple[float, float],
+                 min_chroma: float = 6.0) -> tuple[np.ndarray, np.ndarray | None]:
+    """The floor colour in one sample box, and the sizeable regions of that colour touching it."""
+    h, w = lab.shape[:2]
     box = (slice(int(h * rows[0]), int(h * rows[1])), slice(int(w * 0.3), int(w * 0.7)))
     ref = lab[box].reshape(-1, 3)
     L = ref[:, 0]
     ref = ref[(L >= np.percentile(L, 10)) & (L <= np.percentile(L, 80))]  # skip line paint and shadows
     ab_ref = np.median(ref[:, 1:], axis=0) - 128
     chroma_ref = float(np.linalg.norm(ab_ref))
-    if chroma_ref < 6:
+    if chroma_ref < min_chroma:
         raise AutoCalibrationError(
             "The floor at the bottom of the frame has hardly any colour, so it can't be told from "
             "its surroundings. Click the points instead."
@@ -358,18 +429,18 @@ def _floor_mask(img: np.ndarray, rows: tuple[float, float] = FLOOR_SAMPLES[0]) -
     seed = labels[box].ravel()
     seed = seed[seed > 0]
     if not len(seed):
-        raise AutoCalibrationError("Couldn't find the court floor at the bottom of the frame. Click the points instead.")
+        return ab_ref, None
     # Every sizeable piece in the sample box: a wide centre line can split the floor in two.
     counts = np.bincount(seed)
-    floor = np.isin(labels, np.flatnonzero(counts >= 0.15 * counts.max())).astype(np.uint8)
-    # Fill holes (lines, players, the net) so the floor is one solid region.
-    cnts, _ = cv2.findContours(floor, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    cv2.drawContours(floor, cnts, -1, 1, thickness=cv2.FILLED)
-    return floor.astype(bool)
+    return ab_ref, np.isin(labels, np.flatnonzero(counts >= 0.15 * counts.max()))
 
 
 def _white_masks(img: np.ndarray, floor: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Thin strokes brighter and paler than the floor around them: clear ones, and faint ones too."""
+    """Thin strokes brighter than the floor and not its colour: clear ones, and faint ones too.
+
+    Lines are usually white, but some courts paint them cream or yellow, so a
+    stroke counts if it is paler than the floor or a clearly different hue.
+    """
     h, w = img.shape[:2]
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     L = lab[..., 0].astype(np.float32)
@@ -381,8 +452,11 @@ def _white_masks(img: np.ndarray, floor: np.ndarray) -> tuple[np.ndarray, np.nda
     # far end counts as much as a bright one up close. The median ignores the line itself.
     local = cv2.medianBlur(np.clip(tophat, 0, 255).astype(np.uint8), 41).astype(np.float32) + 2.0
     z = tophat / local
-    pale = chroma < 0.85 * cv2.morphologyEx(chroma, cv2.MORPH_CLOSE, se) + 2
     on_floor = cv2.dilate(floor.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    ab = lab[..., 1:].astype(np.float32) - 128
+    ab_floor = np.median(ab[floor], axis=0) if floor.any() else np.zeros(2)
+    cos = (ab @ ab_floor) / (np.linalg.norm(ab, axis=2) * np.linalg.norm(ab_floor) + 1e-6)
+    pale = (chroma < 0.85 * cv2.morphologyEx(chroma, cv2.MORPH_CLOSE, se) + 2) | (cos < 0.5)
     white = (z > 4.0) & (tophat > 8) & pale & on_floor
     faint = (z > 2.5) & (tophat > 4) & pale & on_floor
     return white, faint
@@ -421,14 +495,15 @@ def _white_lines(white: np.ndarray, max_lines: int = 12) -> list[_Line]:
 def _floor_edges(floor: np.ndarray) -> dict[str, np.ndarray]:
     """Where the floor ends: per row on the left and right, per column at the top.
 
-    Only the widest floor run in each row counts, and ends that reach the
-    frame's border say nothing about the walls.
+    Only the widest floor run in each row counts (bridging gaps as narrow as a
+    painted line), and ends that reach the frame's border say nothing about the walls.
     """
     h, w = floor.shape
+    gap = max(2, w // 50)  # a painted line across the run (the centre line) doesn't end it
     left, right = [], []
     for y in np.flatnonzero(floor.any(axis=1)):
         xs = np.flatnonzero(floor[y])
-        breaks = np.flatnonzero(np.diff(xs) > 1)
+        breaks = np.flatnonzero(np.diff(xs) > gap)
         starts = np.concatenate([[xs[0]], xs[breaks + 1]])
         ends = np.concatenate([xs[breaks], [xs[-1]]])
         i = int(np.argmax(ends - starts))
