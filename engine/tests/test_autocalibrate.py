@@ -11,12 +11,19 @@ SURROUND = (60, 120, 50)  # turf green beyond the side walls
 PAINT = (235, 240, 240)
 
 
-def court_frame(cam: Camera, noise: float = 4.0, seed: int = 0, players: bool = True) -> np.ndarray:
-    """A camera's view of an empty court: blue floor, white lines 5 cm wide, net with its tape."""
+def court_frame(cam: Camera, noise: float = 4.0, seed: int = 0, players: bool = True,
+                near_floor: tuple[int, int, int] | None = None) -> np.ndarray:
+    """A camera's view of an empty court: blue floor, white lines 5 cm wide, net with its tape.
+
+    ``near_floor`` paints the floor behind the near service line another shade, as when
+    the camera's own glass or a roof edge darkens it.
+    """
     rng = np.random.default_rng(seed)
     img = np.full((H, W, 3), SURROUND, np.uint8)
     img[: H // 4] = (25, 25, 30)  # night sky
     _fill_ground(img, cam, [(0, 0.0), (10, 0.0), (10, 20), (0, 20)], FLOOR)
+    if near_floor is not None:
+        _fill_ground(img, cam, [(0, 0.0), (10, 0.0), (10, court.NEAR_SERVICE_Y), (0, court.NEAR_SERVICE_Y)], near_floor)
     for name, ((x1, y1), (x2, y2)) in court.LINES.items():
         if name.endswith("wall") or name == "net":
             continue
@@ -93,6 +100,19 @@ def test_finds_the_court_from_its_lines(name):
 
 def _height(cam: Camera) -> float:
     return float(-(cam.R.T @ cam.t)[2])
+
+
+def test_near_end_in_another_shade_with_the_side_lines_out_of_frame():
+    # As at Matchpoint: a phone close to the glass sees the near service line run off both
+    # edges of the frame, and the floor behind it is darker and greyer than the rest.
+    cam = Camera(pos=(5.0, -0.13, 1.7), look_at=(5.0, 6.1, 0.0), f=640.0, roll_deg=0.5)
+    ends = cam.ground([(0.0, court.NEAR_SERVICE_Y), (10.0, court.NEAR_SERVICE_Y)])
+    assert ends[0, 0] < 0 and ends[1, 0] > W  # the near sides really are out of frame
+    frames = [court_frame(cam, seed=s, near_floor=(105, 80, 55)) for s in range(3)]
+    found = auto_calibrate(frames)
+    err = court_error_m(found.calibration, cam)
+    assert np.median(err) < 0.15, found.summary()
+    assert err.max() < 0.40, found.summary()
 
 
 def test_players_on_the_lines_are_removed_by_combining_frames():

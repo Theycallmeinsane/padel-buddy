@@ -37,6 +37,7 @@ one process for use on your own computer.
 
 from __future__ import annotations
 
+import logging
 import gzip
 import hashlib
 import json
@@ -63,6 +64,8 @@ from .storage import ALLOWED_VIDEO_EXTS, LocalStorage
 
 _RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
 PLAYER_IDS = ("P1", "P2", "P3", "P4")
+
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -316,6 +319,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             found = auto_calibrate(frames)
         except AutoCalibrationError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:  # never a server error for a picture the finder can't handle
+            log.exception("Court finder failed on match %s at %ss", match.id, t)
+            raise HTTPException(
+                422, f"The court finder hit an error on this frame ({type(exc).__name__}). "
+                "Try another frame with the slider, or click the points instead.",
+            ) from exc
         calib = found.calibration
         return AutoCalibrationOut(
             image_size=calib.image_size,
@@ -731,8 +740,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if settings.web_dir is not None:
         # Mounted last, so API routes win; html=True serves /match/ as match/index.html.
-        app.mount("/", StaticFiles(directory=settings.web_dir, html=True), name="web")
+        app.mount("/", WebFiles(directory=settings.web_dir, html=True), name="web")
     return app
+
+
+class WebFiles(StaticFiles):
+    """The web app's static export, tolerant of how Next names its page data on Windows.
+
+    The browser asks for `players/__next.players.__PAGE__.txt` when it moves between pages. A build made
+    on Linux writes that file; a build made on Windows writes `players/__next.players/__PAGE__.txt`
+    instead, and every page change then 404s. Either spelling is served.
+    """
+
+    def lookup_path(self, path: str):
+        full_path, stat_result = super().lookup_path(path)
+        if stat_result is None:
+            alt = _next_data_alt(path)
+            if alt is not None:
+                return super().lookup_path(alt)
+        return full_path, stat_result
+
+
+def _next_data_alt(path: str) -> str | None:
+    head, _, name = path.replace("\\", "/").rpartition("/")
+    if not (name.startswith("__next.") and name.endswith(".txt")):
+        return None
+    parts = name[: -len(".txt")].split(".")[1:]
+    if len(parts) < 2:
+        return None
+    alt = "__next." + "/".join(parts) + ".txt"
+    return f"{head}/{alt}" if head else alt
 
 
 def import_video(settings: Settings, src: Path, title: str | None = None) -> Match:

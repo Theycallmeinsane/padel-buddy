@@ -264,6 +264,20 @@ def test_serves_the_web_app_next_to_the_api(tmp_path):
     assert c.get("/matches").json() == []
 
 
+def test_serves_page_data_from_a_windows_build(tmp_path):
+    # Next on Windows writes players/__next.players/__PAGE__.txt; the browser asks for the dotted name.
+    web = tmp_path / "out"
+    (web / "players" / "__next.players").mkdir(parents=True)
+    (web / "players" / "__next.players" / "__PAGE__.txt").write_text("windows")
+    (web / "settings").mkdir()
+    (web / "settings" / "__next.settings.__PAGE__.txt").write_text("linux")
+    c = TestClient(create_app(Settings(data_dir=tmp_path / "d", web_dir=web)))
+    assert c.get("/players/__next.players.__PAGE__.txt", params={"_rsc": "x"}).text == "windows"
+    assert c.get("/settings/__next.settings.__PAGE__.txt").text == "linux"
+    assert c.get("/players/__next.nothing.__PAGE__.txt").status_code == 404
+    assert c.get("/players/__next.txt").status_code == 404
+
+
 def test_web_pages_and_api_routes_never_share_a_path(settings):
     # API routes win when one process serves both, so a page at /people/ would lose
     # its own files (people/__next._tree.txt) to GET /people/{name}.
