@@ -9,6 +9,16 @@ import { formatTime } from "./common";
 import { SkipButtons } from "./Video";
 import { FixList, FixPanel, type SaveFix } from "./NameFixes";
 import { NameBox, TagList, type SaveTag } from "./Tags";
+import CourtAdjuster from "./CourtAdjuster";
+import {
+  adjustLines,
+  anchorsFor,
+  correction,
+  loadAdjustment,
+  storeAdjustment,
+  type CourtAdjustment,
+  type Pt,
+} from "@/lib/courtAdjust";
 
 // Same colours as the engine's preview video: team A in blues, team B warm.
 export const PLAYER_COLORS: Record<string, string> = { P1: "#1e8ceb", P2: "#28dce6", P3: "#f58c28", P4: "#e63c3c" };
@@ -93,6 +103,9 @@ export default function MatchViewer({
   const [fixing, setFixing] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [hint, setHint] = useState<string | null>(null);
+  // Court lines moved by hand onto the paint: kept in this browser only, never sent to the server.
+  const [adjusting, setAdjusting] = useState(false);
+  const [adjustment, setAdjustment] = useState<CourtAdjustment | null>(null);
   const narrow = useMediaQuery("(max-width: 720px)");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -114,6 +127,28 @@ export default function MatchViewer({
       live = false;
     };
   }, [api, matchId, overlayFile, version]);
+
+  useEffect(() => setAdjustment(loadAdjustment(matchId)), [matchId]);
+
+  const anchors = useMemo(
+    () => (overlay ? anchorsFor(overlay.court_to_image, overlay.size as Pt) : null),
+    [overlay],
+  );
+  const lineFix = useMemo(
+    () => (overlay ? correction(adjustment, anchors, overlay.size as Pt) : null),
+    [overlay, adjustment, anchors],
+  );
+  // What the canvas draws: the engine's overlay, with the court lines moved when they were adjusted.
+  const drawn = useMemo(
+    () => (overlay && lineFix ? { ...overlay, lines: adjustLines(overlay.lines, lineFix) } : overlay),
+    [overlay, lineFix],
+  );
+
+  function saveAdjustment(to: Pt[] | null) {
+    const next = to && anchors && overlay ? { size: overlay.size as Pt, from: anchors.map((a) => a.image), to } : null;
+    setAdjustment(next);
+    storeAdjustment(matchId, next);
+  }
 
   useEffect(() => {
     if (!ballFile) return;
@@ -142,11 +177,11 @@ export default function MatchViewer({
         shown = t;
         setMatchTime(t);
       }
-      paint(canvas, video, overlay, ball, layers, t, marks);
+      paint(canvas, video, drawn, ball, adjusting ? { ...layers, lines: true } : layers, t, marks);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [overlay, ball, layers, segments, marks]);
+  }, [drawn, ball, layers, segments, marks, adjusting]);
 
   const seek = useCallback(
     (t: number) => {
@@ -218,8 +253,26 @@ export default function MatchViewer({
         <h2 className="grow" style={{ margin: 0 }}>
           Watch
         </h2>
+        {overlay && anchors && (
+          <button
+            className={adjusting ? "primary" : ""}
+            onClick={() => {
+              if (!adjusting) {
+                videoRef.current?.pause();
+                startTagging(false);
+              }
+              setAdjusting(!adjusting);
+            }}
+            title="Drag the court lines onto the painted lines. Changes only what is drawn here."
+          >
+            {adjusting ? "Done adjusting" : "Adjust court lines"}
+          </button>
+        )}
         {overlay && onTag && (
-          <button className={tagging ? "primary" : ""} onClick={() => startTagging(!tagging)}>
+          <button className={tagging ? "primary" : ""} onClick={() => {
+            if (!tagging) setAdjusting(false);
+            startTagging(!tagging);
+          }}>
             {tagging ? "Done naming" : "Name or fix a player"}
           </button>
         )}
@@ -276,6 +329,14 @@ export default function MatchViewer({
             }}
           />
           <canvas ref={canvasRef} aria-hidden="true" className={tagging ? "tagging" : undefined} onClick={pick} />
+          {adjusting && overlay && anchors && (
+            <CourtAdjuster
+              size={overlay.size as Pt}
+              anchors={anchors}
+              handles={lineFix && adjustment ? adjustment.to : anchors.map((a) => a.image)}
+              onChange={saveAdjustment}
+            />
+          )}
           {draft && onTag && (
             <NameBox
               left={draft.left}
@@ -342,6 +403,27 @@ export default function MatchViewer({
         </a>
       </p>
       {tagging && hint && <p className="small muted">{hint}</p>}
+      {adjusting && (
+        <div className="row small" role="status">
+          <p className="muted grow" style={{ margin: 0 }}>
+            Drag a corner, or a whole edge, until the yellow outline sits on the painted lines; arrow keys nudge the
+            selected corner (Shift for bigger steps). Every court line follows. This only changes the lines drawn in
+            this browser: the tracking and any analysis that is running still use the saved calibration, which
+            Recalibrate court changes.
+          </p>
+          <button onClick={() => saveAdjustment(null)} disabled={!lineFix}>
+            Reset to calibration
+          </button>
+        </div>
+      )}
+      {!adjusting && lineFix && layers.lines && (
+        <p className="small muted" style={{ margin: "8px 0 0" }}>
+          Court lines moved by hand in this browser.{" "}
+          <button className="link" onClick={() => saveAdjustment(null)}>
+            Show them as calibrated
+          </button>
+        </p>
+      )}
       {fixing && onFix && <FixPanel names={names} now={matchTime} onSave={onFix} onClose={() => setFixing(false)} />}
       {updating && <p className="small muted">Updating who is who from your tags and fixes. The names here change when it&apos;s done.</p>}
       {onDeleteTag && <TagList tags={tags} onSeek={seek} onDelete={onDeleteTag} />}
