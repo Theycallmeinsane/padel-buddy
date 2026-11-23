@@ -163,6 +163,15 @@ th { color: var(--muted); font-weight: 500; }
 .stage video { width: 100%; max-height: 75vh; display: block; border-radius: 10px; background: #000; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .stage canvas.tagging { pointer-events: auto; cursor: crosshair; }
+/* Adjusting the court lines: handles over the picture, in source pixels like the canvas. */
+.court-adjust { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; touch-action: none; }
+.court-adjust .outline { fill: rgba(255, 214, 10, 0.08); stroke: #ffd60a; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; stroke-width: 1.5; pointer-events: none; }
+.court-adjust .edge { stroke: transparent; pointer-events: stroke; cursor: move; }
+.court-adjust .edge:hover { stroke: rgba(255, 214, 10, 0.3); }
+.court-adjust .corner { fill: rgba(255, 214, 10, 0.3); stroke: #ffd60a; pointer-events: all; cursor: grab; outline: none; }
+.court-adjust .corner.on { fill: rgba(255, 59, 48, 0.35); stroke: #ff3b30; }
+.court-adjust .corner:focus-visible { stroke: #fff; }
+.court-adjust text { fill: #fff; paint-order: stroke; stroke: rgba(0, 0, 0, 0.7); stroke-width: 3px; pointer-events: none; font-family: system-ui, sans-serif; }
 
 /* Naming players: the "who is this?" box and the list of tags */
 .name-box {
